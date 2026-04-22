@@ -41,7 +41,7 @@ async function loadHistory(forceRefresh = false) {
   if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) {
     return { ...cached, fromCache: true };
   }
-  // Demo data for now
+  // TODO: Replace with real scraping logic
   const rows = [
     { date: "21-04-2026", firstRound: "12", secondRound: "34" },
     { date: "20-04-2026", firstRound: "56", secondRound: "78" }
@@ -56,7 +56,7 @@ async function loadLive(forceRefresh = false) {
   if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) {
     return { ...cached, fromCache: true };
   }
-  // Demo data for now
+  // TODO: Replace with real scraping logic
   const payload = {
     fetchedAt: new Date().toISOString(),
     date: "22-04-2026",
@@ -84,7 +84,6 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ live, history }));
   } else {
-    // Root endpoint returns plain text for humans
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Shillong Teer Dashboard is running!");
   }
