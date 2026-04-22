@@ -1,0 +1,9 @@
+{
+  "name": "shillong-teer-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shillong Teer results dashboard with history and heuristic prediction analysis.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

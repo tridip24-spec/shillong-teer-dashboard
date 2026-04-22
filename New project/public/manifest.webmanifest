@@ -1,0 +1,17 @@
+﻿{
+  "name": "Shillong Teer Analysis Dashboard",
+  "short_name": "Shillong Teer",
+  "description": "Daily results, one-year history, and informational trend analysis.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f2efe8",
+  "theme_color": "#7f2d12",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
