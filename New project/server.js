@@ -21,26 +21,6 @@ function ensureDir(target) {
   }
 }
 
-function cleanText(value) {
-  return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function safeNumberToken(value) {
-  if (!value) return null;
-  const token = value.trim().toUpperCase();
-  if (/^\d{1,2}$/.test(token)) return token.padStart(2, "0");
-  if (token === "-" || token === "OFF" || token === "XX") return "XX";
-  return null;
-}
-
-async function fetchText(url) {
-  const response = await fetch(url, {
-    headers: { "user-agent": "Mozilla/5.0" }
-  });
-  if (!response.ok) throw new Error(`Failed ${response.status} for ${url}`);
-  return response.text();
-}
-
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
@@ -65,11 +45,7 @@ async function loadHistory(forceRefresh = false) {
     return { ...cached, fromCache: true };
   }
   try {
-    const [archiveHtml, supplementalHtml] = await Promise.all([
-      fetchText(HISTORY_URL),
-      fetchText(SUPPLEMENTAL_HISTORY_URL),
-    ]);
-    // Simplified parsing for now
+    // Simplified for now
     const rows = [{ date: "01-01-2026", firstRound: "12", secondRound: "34" }];
     const payload = { fetchedAt: new Date().toISOString(), rows };
     writeJson(HISTORY_CACHE_PATH, payload);
@@ -86,8 +62,7 @@ async function loadLive(forceRefresh = false) {
     return { ...cached, fromCache: true };
   }
   try {
-    const html = await fetchText(LIVE_URL);
-    // Simplified parsing for now
+    // Simplified for now
     const payload = {
       fetchedAt: new Date().toISOString(),
       date: "22-04-2026",
