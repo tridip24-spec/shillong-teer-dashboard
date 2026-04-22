@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = "shillong-teer-static-v1";
+const CACHE_NAME = "shillong-teer-static-v2";
 const STATIC_ASSETS = [
   "/",
   "/styles.css",
@@ -6,7 +6,7 @@ const STATIC_ASSETS = [
   "/manifest.webmanifest",
   "/icon.svg",
   "/disclaimer.html",
-  "/privacy.html"
+  "/privacy.html",
 ];
 
 self.addEventListener("install", (event) => {
@@ -24,9 +24,17 @@ self.addEventListener("activate", (event) => {
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
 
+  const requestUrl = new URL(event.request.url);
+
+  if (requestUrl.pathname.startsWith("/api/")) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   event.respondWith(
     caches.match(event.request).then((cached) => {
       if (cached) return cached;
+
       return fetch(event.request)
         .then((response) => {
           if (!response || response.status !== 200) return response;
