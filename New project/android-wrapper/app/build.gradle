@@ -13,8 +13,7 @@ android {
         targetSdk 34
         versionCode 1
         versionName "1.0.0"
-        buildConfigField "String", "APP_BASE_URL", "\"https://YOUR-LIVE-URL.example.com/\""
-
+buildConfigField "String", "APP_BASE_URL", "\"https://shillong-teer-dashboard.onrender.com/\""
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
