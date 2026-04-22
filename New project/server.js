@@ -218,3 +218,12 @@ async function loadHistory(forceRefresh = false) {
       .sort((a, b) => b.isoDate.localeCompare(a.isoDate));
     const payload = {
       fetchedAt: new Date().toISOString
+// Create and start the HTTP server
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Shillong Teer Dashboard is running!");
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
