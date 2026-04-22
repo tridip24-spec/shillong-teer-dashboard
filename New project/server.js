@@ -11,7 +11,7 @@ const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
 
 const LIVE_URL = "https://shillongteer.com/";
 const HISTORY_URL = "https://shillongteer.com/previous-results/";
-const SUPPLEMENTAL_HISTORY_URL = "https://shillongteergrounds.in/";
+const SUPPLEMENTAL_HISTORY_URL = "https://shillongteergrounds.in/shillong-teer-previous-result-list/";
 const LIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
@@ -87,6 +87,9 @@ function safeNumberToken(value) {
   if (/^\d{1,2}$/.test(token)) {
     return padNumber(token);
   }
+  if (token === "-") {
+    return "XX";
+  }
   if (token === "OFF" || token === "XX") {
     return token;
   }
@@ -96,7 +99,10 @@ function safeNumberToken(value) {
 async function fetchText(url) {
   const response = await fetch(url, {
     headers: {
-      "user-agent": "Mozilla/5.0 Codex Shillong Teer Dashboard",
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+      "accept-language": "en-US,en;q=0.9",
+      referer: "https://shillongteergrounds.in/",
     },
   });
 
@@ -133,7 +139,7 @@ function parseHistoryPage(html) {
 
 function parseSupplementalHistoryPage(html) {
   const rows = [];
-  const rowPattern = /<tr><td>(\d{2}\.\d{2}\.\d{4})<\/td><td>([A-Z0-9]{2,3})<\/td><td>([A-Z0-9]{2,3})<\/td><\/tr>/g;
+  const rowPattern = /<tr><td>(\d{2}\.\d{2}\.\d{4})<\/td><td>([A-Z0-9-]{1,3})<\/td><td>([A-Z0-9-]{1,3})<\/td><\/tr>/g;
 
   for (const match of html.matchAll(rowPattern)) {
     const sourceDate = match[1];
