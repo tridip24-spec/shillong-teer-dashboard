@@ -3,7 +3,7 @@ services:
     name: shillong-teer-dashboard
     env: node
     plan: free
-    rootDir: New project
     buildCommand: npm install
-    startCommand: npm start
+    startCommand: node server.js
     autoDeploy: true
+    nodeVersion: 20
