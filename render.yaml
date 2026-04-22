@@ -7,3 +7,4 @@ services:
     startCommand: node server.js
     autoDeploy: true
     nodeVersion: 20
+    healthCheckPath: /api/live
