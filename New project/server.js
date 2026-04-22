@@ -78,7 +78,13 @@ const server = http.createServer(async (req, res) => {
     const history = await loadHistory();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(history));
+  } else if (req.url === "/api/dashboard") {
+    const live = await loadLive();
+    const history = await loadHistory();
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ live, history }));
   } else {
+    // Root endpoint returns plain text for humans
     res.writeHead(200, { "Content-Type": "text/plain" });
     res.end("Shillong Teer Dashboard is running!");
   }
