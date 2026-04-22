@@ -1,4 +1,4 @@
-﻿:root {
+:root {
   --bg: #f2efe8;
   --bg-soft: #faf7f0;
   --panel: rgba(255, 252, 245, 0.92);
@@ -149,7 +149,8 @@ h1 {
 
 .result-grid,
 .prediction-grid,
-.chart-grid {
+.chart-grid,
+.shift-grid {
   display: grid;
   gap: 16px;
 }
@@ -160,6 +161,11 @@ h1 {
 }
 
 .prediction-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.shift-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   margin-top: 16px;
 }
@@ -289,7 +295,7 @@ input {
 
 .trend-strip {
   display: grid;
-  grid-template-columns: 1.1fr 1fr;
+  grid-template-columns: 1.1fr 1fr 1fr;
   gap: 24px;
   margin-top: 24px;
 }
@@ -367,6 +373,7 @@ th {
   .hero,
   .trend-strip,
   .chart-grid,
+  .shift-grid,
   .prediction-grid,
   .result-grid {
     grid-template-columns: 1fr;
