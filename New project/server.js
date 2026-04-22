@@ -13,7 +13,7 @@ const LIVE_URL = "https://shillongteer.com/";
 const HISTORY_URL = "https://shillongteer.com/previous-results/";
 const SUPPLEMENTAL_HISTORY_URL = "https://shillongteergrounds.in/";
 const LIVE_CACHE_TTL_MS = 5 * 60 * 1000;
-const HISTORY_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const HISTORY_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
