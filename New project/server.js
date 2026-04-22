@@ -215,4 +215,6 @@ async function loadHistory(forceRefresh = false) {
     const archiveRows = parseHistoryPage(archiveHtml);
     const supplementalRows = parseSupplementalHistoryPage(supplementalHtml);
     const rows = [...new Map([...supplementalRows, ...archiveRows].map(r => [r.isoDate, r])).values()]
-      .sort
+      .sort((a, b) => b.isoDate.localeCompare(a.isoDate));
+    const payload = {
+      fetchedAt: new Date().toISOString
