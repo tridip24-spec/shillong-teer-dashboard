@@ -1,4 +1,4 @@
-﻿const state = {
+const state = {
   history: [],
   autoRefreshEnabled: true,
   refreshCountdown: 60,
@@ -111,9 +111,17 @@ function renderInsights(insights) {
     title: item.value,
     subtitle: `Score ${item.score}`,
   }));
-  renderChipList("generatedCommonNumbers", insights.commonNumbers, (item) => ({
+  renderChipList("possibleNumbers", insights.possibleNumbers, (item) => ({
     title: item.value,
-    subtitle: item.reason,
+    subtitle: `${item.confidence} • ${item.reason}`,
+  }));
+  renderChipList("risingHouses", insights.shiftSummary.risingHouses, (item) => ({
+    title: `House ${item.value}`,
+    subtitle: `Shift +${item.shift}`,
+  }));
+  renderChipList("risingEndings", insights.shiftSummary.risingEndings, (item) => ({
+    title: `Ending ${item.value}`,
+    subtitle: `Shift +${item.shift}`,
   }));
 }
 
@@ -137,6 +145,10 @@ function renderDashboard(payload) {
   renderChipList("strongDirectNumbers", payload.analytics.strongestDirect, (item) => ({
     title: item.value,
     subtitle: `${item.count} times`,
+  }));
+  renderChipList("recentShiftNumbers", payload.analytics.recentShiftNumbers, (item) => ({
+    title: item.value,
+    subtitle: `Last 21 draws: ${item.count}`,
   }));
   renderMonthlyTrend(payload.analytics.months);
 
