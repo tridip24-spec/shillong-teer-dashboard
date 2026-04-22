@@ -1,7 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const fetch = require("node-fetch"); // make sure node-fetch is installed
+const fetch = require("node-fetch"); // make sure this is in package.json
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, "data");
@@ -15,33 +15,27 @@ const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
 const LIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
-ensureDir(DATA_DIR);
-
-function ensureDir(target) {
-  if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
-}
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 function writeJson(filePath, value) {
   fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
 }
-
 function readJson(filePath, fallback) {
   try { return JSON.parse(fs.readFileSync(filePath, "utf8")); }
   catch { return fallback; }
 }
-
 function isCacheFresh(cacheValue, ttlMs) {
   if (!cacheValue?.fetchedAt) return false;
   const fetchedAt = new Date(cacheValue.fetchedAt).getTime();
   return Date.now() - fetchedAt < ttlMs;
 }
-
 async function fetchText(url) {
   const response = await fetch(url, { headers: { "user-agent": "Mozilla/5.0" } });
   if (!response.ok) throw new Error(`Failed ${response.status} for ${url}`);
   return response.text();
 }
 
+// --- Parsing helpers (simplified) ---
 function parseHistoryPage(html) {
   const rows = [];
   const rowPattern = /<tr>\s*<td>(\d{2}-\d{2}-\d{4})<\/td>\s*<td[^>]*>([0-9A-Z]{2,3})<\/td>\s*<td[^>]*>([0-9A-Z]{2,3})<\/td>\s*<\/tr>/g;
@@ -50,7 +44,6 @@ function parseHistoryPage(html) {
   }
   return rows;
 }
-
 function parseLivePage(html) {
   const dateMatch = html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i);
   const roundMatch = html.match(/<div class="rn">([0-9A-Z]{2,3})<\/div>.*?<div class="rn">([0-9A-Z]{2,3})<\/div>/is);
@@ -61,42 +54,58 @@ function parseLivePage(html) {
   };
 }
 
+// --- Loaders ---
 async function loadHistory(forceRefresh = false) {
   const cached = readJson(HISTORY_CACHE_PATH, null);
-  if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) return { ...cached, fromCache: true };
+  if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) return cached;
   const html = await fetchText(HISTORY_URL);
   const rows = parseHistoryPage(html);
   const payload = { fetchedAt: new Date().toISOString(), rows };
   writeJson(HISTORY_CACHE_PATH, payload);
-  return { ...payload, fromCache: false };
+  return payload;
 }
-
 async function loadLive(forceRefresh = false) {
   const cached = readJson(LIVE_CACHE_PATH, null);
-  if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) return { ...cached, fromCache: true };
+  if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) return cached;
   const html = await fetchText(LIVE_URL);
   const result = parseLivePage(html);
   const payload = { fetchedAt: new Date().toISOString(), ...result };
   writeJson(LIVE_CACHE_PATH, payload);
-  return { ...payload, fromCache: false };
+  return payload;
 }
 
-// HTTP server
+// --- Simple analytics ---
+function analyzeHistory(rows) {
+  const houseCounts = Array(10).fill(0);
+  const endingCounts = Array(10).fill(0);
+  for (const row of rows) {
+    for (const token of [row.firstRound, row.secondRound]) {
+      if (/^\d{2}$/.test(token)) {
+        houseCounts[Number(token[0])] += 1;
+        endingCounts[Number(token[1])] += 1;
+      }
+    }
+  }
+  return { houseCounts, endingCounts };
+}
+
+// --- Server ---
 const server = http.createServer(async (req, res) => {
   try {
-    if (req.url === "/api/live") {
+    if (req.url.startsWith("/api/live")) {
       const live = await loadLive();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(live));
-    } else if (req.url === "/api/history") {
+    } else if (req.url.startsWith("/api/history")) {
       const history = await loadHistory();
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(history));
-    } else if (req.url === "/api/dashboard") {
+    } else if (req.url.startsWith("/api/dashboard")) {
       const live = await loadLive();
       const history = await loadHistory();
+      const analytics = analyzeHistory(history.rows);
       res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ live, history }));
+      res.end(JSON.stringify({ live, history: history.rows.slice(0, 365), analytics }));
     } else {
       res.writeHead(200, { "Content-Type": "text/plain" });
       res.end("Shillong Teer Dashboard is running!");
