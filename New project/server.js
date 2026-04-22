@@ -11,7 +11,7 @@ const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
 
 const LIVE_URL = "https://shillongteer.com/";
 const HISTORY_URL = "https://shillongteer.com/previous-results/";
-const SUPPLEMENTAL_HISTORY_URL = "https://shillongteergrounds.in/shillong-teer-previous-result-list/";
+const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
 const LIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
@@ -102,7 +102,7 @@ async function fetchText(url) {
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
       "accept-language": "en-US,en;q=0.9",
-      referer: "https://shillongteergrounds.in/",
+      referer: "https://shillongteerresultlist.co.in/",
     },
   });
 
@@ -139,10 +139,11 @@ function parseHistoryPage(html) {
 
 function parseSupplementalHistoryPage(html) {
   const rows = [];
-  const rowPattern = /<tr><td>(\d{2}\.\d{2}\.\d{4})<\/td><td>([A-Z0-9-]{1,3})<\/td><td>([A-Z0-9-]{1,3})<\/td><\/tr>/g;
+  const rowPattern =
+    /<tr[^>]*>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<\/tr>/gi;
 
   for (const match of html.matchAll(rowPattern)) {
-    const sourceDate = match[1];
+    const sourceDate = cleanText(match[1]).replace(/\./g, "-");
     const isoDate = formatIsoDateFromAny(sourceDate);
     const firstRound = safeNumberToken(match[2]);
     const secondRound = safeNumberToken(match[3]);
