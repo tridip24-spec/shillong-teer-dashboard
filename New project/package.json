@@ -1,9 +1,17 @@
 {
   "name": "shillong-teer-dashboard",
   "version": "1.0.0",
-  "private": true,
-  "description": "Shillong Teer results dashboard with history and heuristic prediction analysis.",
+  "description": "Shillong Teer dashboard service",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
-  }
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "author": "",
+  "license": "MIT"
 }
