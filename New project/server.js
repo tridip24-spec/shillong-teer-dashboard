@@ -41,7 +41,7 @@ async function loadHistory(forceRefresh = false) {
   if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) {
     return { ...cached, fromCache: true };
   }
-  // Simplified demo data
+  // Demo data for now
   const rows = [
     { date: "21-04-2026", firstRound: "12", secondRound: "34" },
     { date: "20-04-2026", firstRound: "56", secondRound: "78" }
@@ -56,7 +56,7 @@ async function loadLive(forceRefresh = false) {
   if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) {
     return { ...cached, fromCache: true };
   }
-  // Simplified demo data
+  // Demo data for now
   const payload = {
     fetchedAt: new Date().toISOString(),
     date: "22-04-2026",
@@ -76,4 +76,14 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(live));
   } else if (req.url === "/api/history") {
     const history = await loadHistory();
-    res.writeHead(200, { "Content-Type": "application
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(history));
+  } else {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Shillong Teer Dashboard is running!");
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
