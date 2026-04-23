@@ -175,8 +175,13 @@ function renderAnalytics(analytics) {
 function renderDashboard(payload) {
   if (!payload) return;
 
-  // Live Results
+  console.log('Rendering dashboard with payload:', payload);
+
+  // Live Results - REAL TIME DATA
   const liveData = payload.live || {};
+  
+  console.log('Live data:', liveData);
+  
   document.getElementById('liveDate').textContent = liveData.date || '--';
   document.getElementById('firstRound').textContent = liveData.firstRound || '--';
   document.getElementById('secondRound').textContent = liveData.secondRound || '--';
@@ -247,7 +252,9 @@ async function loadDashboard(refresh = false) {
   try {
     updateStatus('Fetching data...', 'loading');
     const url = refresh ? '/api/dashboard?days=365&refresh=1' : '/api/dashboard?days=365';
+    console.log('Fetching from:', url);
     const payload = await fetchJson(url);
+    console.log('Received payload:', payload);
     renderDashboard(payload);
     updateStatus('Connected', 'connected');
   } catch (err) {
@@ -265,6 +272,7 @@ function startAutoRefresh() {
 
   // Refresh every 60 seconds
   state.refreshTimerId = setInterval(() => {
+    console.log('Auto-refreshing...');
     loadDashboard(true);
   }, 60000);
 }
@@ -318,13 +326,18 @@ function registerServiceWorker() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+  console.log('Initializing dashboard...');
+  
   // Set copyright year
   document.getElementById('copyrightYear').textContent = new Date().getFullYear();
 
   // Refresh button
   const refreshBtn = document.getElementById('refreshBtn');
   if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => loadDashboard(true));
+    refreshBtn.addEventListener('click', () => {
+      console.log('Refresh clicked');
+      loadDashboard(true);
+    });
   }
 
   // Auto refresh toggle
@@ -332,6 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (autoToggle) {
     autoToggle.addEventListener('change', (e) => {
       state.autoRefreshEnabled = e.target.checked;
+      console.log('Auto refresh:', state.autoRefreshEnabled);
       startAutoRefresh();
     });
   }
@@ -346,6 +360,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupHistoryFilter();
 
   // Load initial data
+  console.log('Loading initial dashboard data...');
   loadDashboard();
 
   // Start timers
