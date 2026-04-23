@@ -1,252 +1,367 @@
+// State Management
 const state = {
+  data: null,
   history: [],
   autoRefreshEnabled: true,
   refreshCountdown: 60,
   refreshTimerId: null,
   refreshCountdownId: null,
+  timerInterval: null,
 };
 
+// API Utility
 async function fetchJson(url) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+  try {
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`Status ${response.status}`);
+    return await response.json();
+  } catch (err) {
+    console.error('Fetch error:', err);
+    throw err;
   }
-  return response.json();
 }
 
-function createChip({ title, subtitle = "" }) {
-  const chip = document.createElement("div");
-  chip.className = "chip";
-  chip.innerHTML = `<strong>${title}</strong>${subtitle ? `<span>${subtitle}</span>` : ""}`;
-  return chip;
+// Update UI Status
+function updateStatus(message, type = 'normal') {
+  const indicator = document.getElementById('statusIndicator');
+  if (indicator) {
+    indicator.textContent = message;
+    indicator.className = `status-indicator status-${type}`;
+  }
 }
 
-function renderChipList(targetId, items, mapper) {
-  const target = document.getElementById(targetId);
-  target.innerHTML = "";
+// Extract house and ending from number
+function extractDigits(num) {
+  if (!num || num === '--' || num === 'XX' || num === 'OFF') return { house: '-', ending: '-' };
+  const str = num.toString().padStart(2, '0');
+  return {
+    house: str[0],
+    ending: str[1]
+  };
+}
 
-  if (!items?.length) {
-    target.appendChild(createChip({ title: "--", subtitle: "No data" }));
+// Render Chips
+function renderChips(containerId, items, mapper) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.innerHTML = '';
+  if (!items || items.length === 0) {
+    container.innerHTML = '<div class="chip">No data</div>';
     return;
   }
 
-  items.forEach((item) => target.appendChild(createChip(mapper(item))));
-}
-
-function renderBarChart(targetId, rows) {
-  const target = document.getElementById(targetId);
-  target.innerHTML = "";
-  const max = Math.max(...rows.map((row) => row.count), 1);
-
-  rows.forEach((row) => {
-    const item = document.createElement("div");
-    item.className = "bar-item";
-    item.innerHTML = `
-      <strong>${row.value}</strong>
-      <div class="bar-track"><div class="bar-fill" style="width:${(row.count / max) * 100}%"></div></div>
-      <span>${row.count}</span>
-    `;
-    target.appendChild(item);
+  items.forEach(item => {
+    const mapped = mapper(item);
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.textContent = mapped;
+    container.appendChild(chip);
   });
 }
 
-function renderMonthlyTrend(months) {
-  const target = document.getElementById("monthlyTrend");
-  target.innerHTML = "";
+// Render Daily Results
+function renderDailyResults(rows) {
+  const filter = document.getElementById('historyFilter')?.value.toLowerCase() || '';
+  const container = document.getElementById('dailyResultsContainer');
+  
+  if (!container) return;
+  
+  container.innerHTML = '';
 
-  months.forEach((month) => {
-    const item = document.createElement("div");
-    item.className = "month-card";
-    item.innerHTML = `
-      <strong>${month.month}</strong>
-      <span>House ${month.busiestHouse}</span>
-      <span>Ending ${month.busiestEnding}</span>
-    `;
-    target.appendChild(item);
-  });
-}
-
-function renderHistoryTable(rows) {
-  const filter = document.getElementById("historyFilter").value.trim().toLowerCase();
-  const body = document.getElementById("historyTableBody");
-  body.innerHTML = "";
-
-  const filtered = rows.filter((row) => {
-    const haystack = `${row.date} ${row.firstRound} ${row.secondRound}`.toLowerCase();
+  const filtered = (rows || []).filter(row => {
+    const haystack = `${row.date || ''} ${row.firstRound || ''} ${row.secondRound || ''}`.toLowerCase();
     return haystack.includes(filter);
   });
 
-  filtered.forEach((row) => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${row.date}</td>
-      <td>${row.firstRound}</td>
-      <td>${row.secondRound}</td>
-      <td>${row.firstRound[0]} / ${row.secondRound[0]}</td>
-      <td>${row.firstRound[1]} / ${row.secondRound[1]}</td>
-    `;
-    body.appendChild(tr);
-  });
-
-  document.getElementById("historyCount").textContent = `${filtered.length} rows shown`;
-}
-
-function renderInsights(insights) {
-  const source = insights.generatedFrom
-    ? `${insights.generatedFrom.date} • FR ${insights.generatedFrom.firstRound} • SR ${insights.generatedFrom.secondRound}`
-    : "No seed available";
-
-  document.getElementById("insightSeedLabel").textContent = `Analyzed from: ${source}`;
-  document.getElementById("insightNote").textContent = insights.note;
-
-  renderChipList("topHouses", insights.topHouses, (item) => ({
-    title: `House ${item.value}`,
-    subtitle: `Score ${item.score}`,
-  }));
-  renderChipList("topEndings", insights.topEndings, (item) => ({
-    title: `Ending ${item.value}`,
-    subtitle: `Score ${item.score}`,
-  }));
-  renderChipList("topDirect", insights.topDirect, (item) => ({
-    title: item.value,
-    subtitle: `Score ${item.score}`,
-  }));
-  renderChipList("possibleNumbers", insights.possibleNumbers, (item) => ({
-    title: item.value,
-    subtitle: `${item.confidence} • ${item.reason}`,
-  }));
-  renderChipList("risingHouses", insights.shiftSummary.risingHouses, (item) => ({
-    title: `House ${item.value}`,
-    subtitle: `Shift +${item.shift}`,
-  }));
-  renderChipList("risingEndings", insights.shiftSummary.risingEndings, (item) => ({
-    title: `Ending ${item.value}`,
-    subtitle: `Shift +${item.shift}`,
-  }));
-}
-
-function renderDashboard(payload) {
-  document.getElementById("liveDate").textContent = payload.live.date || "--";
-  document.getElementById("firstRound").textContent = payload.live.firstRound || "--";
-  document.getElementById("secondRound").textContent = payload.live.secondRound || "--";
-  document.getElementById("lastUpdated").textContent = `Updated ${new Date(payload.meta.fetchedAt).toLocaleString()}`;
-  document.getElementById("liveSourceLabel").textContent = payload.live.fromCache
-    ? "Showing cached live snapshot"
-    : "Live page fetched successfully";
-
-  renderChipList("publishedCommonNumbers", payload.live.commonNumbers, (item) => ({
-    title: item,
-    subtitle: "Source page",
-  }));
-
-  renderInsights(payload.predictions);
-  renderBarChart("houseChart", payload.analytics.houseFrequency);
-  renderBarChart("endingChart", payload.analytics.endingFrequency);
-  renderChipList("strongDirectNumbers", payload.analytics.strongestDirect, (item) => ({
-    title: item.value,
-    subtitle: `${item.count} times`,
-  }));
-  renderChipList("recentShiftNumbers", payload.analytics.recentShiftNumbers, (item) => ({
-    title: item.value,
-    subtitle: `Last 21 draws: ${item.count}`,
-  }));
-  renderMonthlyTrend(payload.analytics.months);
-
-  state.history = payload.history;
-  renderHistoryTable(state.history);
-}
-
-function updateCountdownLabel() {
-  const target = document.getElementById("refreshCountdown");
-  if (!state.autoRefreshEnabled) {
-    target.textContent = "Auto refresh paused";
+  if (filtered.length === 0) {
+    container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted);">No results found</div>';
     return;
   }
-  target.textContent = `Next refresh in ${state.refreshCountdown}s`;
+
+  filtered.forEach(row => {
+    const item = document.createElement('div');
+    item.className = 'result-item';
+    
+    const frDigits = extractDigits(row.firstRound);
+    const srDigits = extractDigits(row.secondRound);
+    
+    item.innerHTML = `
+      <div class="result-date">${row.date || '--'}</div>
+      <div class="result-number">${row.firstRound || '--'}</div>
+      <div class="result-number">${row.secondRound || '--'}</div>
+      <div class="result-info">
+        <span>H: ${frDigits.house}/${srDigits.house}</span> | 
+        <span>E: ${frDigits.ending}/${srDigits.ending}</span>
+      </div>
+    `;
+    container.appendChild(item);
+  });
+
+  const count = document.getElementById('historyCount');
+  if (count) {
+    count.textContent = `Showing ${filtered.length} of ${rows.length} results`;
+  }
 }
 
-function clearAutoRefresh() {
+// Render Predictions
+function renderPredictions(predictions) {
+  const container = document.getElementById('predictionsGrid');
+  if (!container) return;
+
+  container.innerHTML = '';
+  if (!predictions?.possibleNumbers || predictions.possibleNumbers.length === 0) {
+    container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted);">No predictions available</div>';
+    return;
+  }
+
+  predictions.possibleNumbers.forEach((pred, idx) => {
+    const card = document.createElement('div');
+    card.className = `prediction-card confidence-${pred.confidence || 'watch'}`;
+    
+    const maxScore = 20;
+    const fillPercent = Math.min(100, (pred.score / maxScore) * 100);
+    
+    card.innerHTML = `
+      <div class="prediction-number">${pred.value}</div>
+      <div class="prediction-score">
+        <div class="prediction-fill" style="width: ${fillPercent}%"></div>
+      </div>
+      <div class="prediction-label">${pred.confidence || 'watch'} • ${pred.reason || 'Analysis'}</div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+// Render Rising Items
+function renderRisingItems(containerId, items) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+
+  container.innerHTML = '';
+  if (!items || items.length === 0) {
+    container.innerHTML = '<div class="chip">No data</div>';
+    return;
+  }
+
+  items.forEach(item => {
+    const div = document.createElement('div');
+    div.className = 'rising-item';
+    div.innerHTML = `
+      <span class="rising-item-label">${item.value ? (isNaN(item.value) ? item.value : `${item.value}`).toString() : 'Unknown'}</span>
+      <span class="rising-item-value">+${item.shift || 0}</span>
+    `;
+    container.appendChild(div);
+  });
+}
+
+// Render Analytics
+function renderAnalytics(analytics) {
+  if (!analytics) return;
+
+  // Top Houses and Endings
+  renderChips('topHouses', analytics.topHouses, item => `House ${item.value} (${item.score})`);
+  renderChips('topEndings', analytics.topEndings, item => `Ending ${item.value} (${item.score})`);
+
+  // Rising data
+  renderRisingItems('risingHouses', analytics.risingHouses);
+  renderRisingItems('risingEndings', analytics.risingEndings);
+
+  // Strongest Direct
+  renderChips('strongDirectNumbers', analytics.strongestDirect, item => `${item.value} (${item.count}x)`);
+}
+
+// Render Dashboard
+function renderDashboard(payload) {
+  if (!payload) return;
+
+  // Live Results
+  const liveData = payload.live || {};
+  document.getElementById('liveDate').textContent = liveData.date || '--';
+  document.getElementById('firstRound').textContent = liveData.firstRound || '--';
+  document.getElementById('secondRound').textContent = liveData.secondRound || '--';
+
+  // Extract and display house/ending
+  const frDigits = extractDigits(liveData.firstRound);
+  const srDigits = extractDigits(liveData.secondRound);
+  document.getElementById('frHouse').textContent = frDigits.house;
+  document.getElementById('frEnding').textContent = frDigits.ending;
+  document.getElementById('srHouse').textContent = srDigits.house;
+  document.getElementById('srEnding').textContent = srDigits.ending;
+
+  // Update time
+  const lastUpdated = document.getElementById('lastUpdated');
+  if (lastUpdated) {
+    const time = new Date(payload.meta?.fetchedAt || new Date());
+    lastUpdated.textContent = `Updated ${time.toLocaleTimeString()}`;
+  }
+
+  // Common Numbers
+  renderChips('publishedCommonNumbers', liveData.commonNumbers, item => item);
+
+  // Daily Results - Fixed!
+  state.history = payload.history || [];
+  renderDailyResults(state.history);
+
+  // Predictions
+  renderPredictions(payload.predictions);
+
+  // Analytics
+  renderAnalytics(payload.analytics);
+
+  // Possible Numbers
+  renderChips('possibleNumbers', payload.predictions?.possibleNumbers, item => `${item.value} (${item.confidence})`);
+
+  state.data = payload;
+  updateStatus('Connected', 'connected');
+}
+
+// Timer Update
+function updateTimers() {
+  const now = new Date();
+  
+  const updateTimer = (elementId, hour, minute) => {
+    const target = new Date();
+    target.setHours(hour, minute, 0, 0);
+    if (now > target) {
+      target.setDate(target.getDate() + 1);
+    }
+    
+    const diff = target - now;
+    const h = Math.floor(diff / 3600000);
+    const m = Math.floor((diff % 3600000) / 60000);
+    const s = Math.floor((diff % 60000) / 1000);
+    
+    const element = document.getElementById(elementId);
+    if (element) {
+      element.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    }
+  };
+  
+  updateTimer('frTimer', 16, 0);  // 4:00 PM
+  updateTimer('srTimer', 16, 45); // 4:45 PM
+}
+
+// Load Dashboard
+async function loadDashboard(refresh = false) {
+  try {
+    updateStatus('Fetching data...', 'loading');
+    const url = refresh ? '/api/dashboard?days=365&refresh=1' : '/api/dashboard?days=365';
+    const payload = await fetchJson(url);
+    renderDashboard(payload);
+    updateStatus('Connected', 'connected');
+  } catch (err) {
+    console.error('Load dashboard error:', err);
+    updateStatus('Error loading data', 'error');
+  }
+}
+
+// Auto Refresh
+function startAutoRefresh() {
   if (state.refreshTimerId) clearInterval(state.refreshTimerId);
   if (state.refreshCountdownId) clearInterval(state.refreshCountdownId);
-  state.refreshTimerId = null;
-  state.refreshCountdownId = null;
-}
-
-function startAutoRefresh() {
-  clearAutoRefresh();
-  state.refreshCountdown = 60;
-  updateCountdownLabel();
 
   if (!state.autoRefreshEnabled) return;
 
-  state.refreshCountdownId = setInterval(() => {
-    state.refreshCountdown = state.refreshCountdown > 1 ? state.refreshCountdown - 1 : 60;
-    updateCountdownLabel();
-  }, 1000);
-
+  // Refresh every 60 seconds
   state.refreshTimerId = setInterval(() => {
-    loadDashboard(true).catch((error) => {
-      document.getElementById("lastUpdated").textContent = error.message;
-    });
-    state.refreshCountdown = 60;
-    updateCountdownLabel();
+    loadDashboard(true);
   }, 60000);
 }
 
-async function loadDashboard(refresh = false) {
-  const url = refresh ? "/api/dashboard?days=365&refresh=1" : "/api/dashboard?days=365";
-  const payload = await fetchJson(url);
-  renderDashboard(payload);
-}
-
-async function handleInsightsSubmit(event) {
-  event.preventDefault();
-
-  const fr = document.getElementById("seedFr").value.trim();
-  const sr = document.getElementById("seedSr").value.trim();
-  const params = new URLSearchParams();
-
-  if (fr) params.set("fr", fr);
-  if (sr) params.set("sr", sr);
-
-  const query = params.toString();
-  const payload = await fetchJson(`/api/insights${query ? `?${query}` : ""}`);
-  renderInsights(payload);
-}
-
-function registerServiceWorker() {
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/sw.js").catch(() => {});
+// History Filter
+function setupHistoryFilter() {
+  const filter = document.getElementById('historyFilter');
+  if (filter) {
+    filter.addEventListener('input', () => {
+      renderDailyResults(state.history);
+    });
   }
 }
 
-document.getElementById("refreshButton").addEventListener("click", () => {
-  state.refreshCountdown = 60;
-  updateCountdownLabel();
-  loadDashboard(true).catch((error) => {
-    document.getElementById("lastUpdated").textContent = error.message;
-  });
-});
+// Insights Form
+async function handleInsightsSubmit(event) {
+  event.preventDefault();
+  try {
+    const fr = document.getElementById('seedFr')?.value.trim() || '';
+    const sr = document.getElementById('seedSr')?.value.trim() || '';
+    
+    const params = new URLSearchParams();
+    if (fr) params.append('fr', fr);
+    if (sr) params.append('sr', sr);
+    
+    const url = `/api/insights${params.toString() ? '?' + params.toString() : ''}`;
+    const data = await fetchJson(url);
+    
+    if (data.possibleNumbers) {
+      renderChips('possibleNumbers', data.possibleNumbers, item => `${item.value} (${item.confidence})`);
+    }
+    
+    const note = document.getElementById('insightNote');
+    if (note) {
+      note.textContent = data.note || 'Analysis complete';
+    }
+  } catch (err) {
+    const note = document.getElementById('insightNote');
+    if (note) {
+      note.textContent = `Error: ${err.message}`;
+    }
+  }
+}
 
-document.getElementById("insightsForm").addEventListener("submit", (event) => {
-  handleInsightsSubmit(event).catch((error) => {
-    document.getElementById("insightNote").textContent = error.message;
-  });
-});
+// Register Service Worker
+function registerServiceWorker() {
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+}
 
-document.getElementById("historyFilter").addEventListener("input", () => {
-  renderHistoryTable(state.history);
-});
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+  // Set copyright year
+  document.getElementById('copyrightYear').textContent = new Date().getFullYear();
 
-document.getElementById("autoRefreshToggle").addEventListener("change", (event) => {
-  state.autoRefreshEnabled = event.target.checked;
+  // Refresh button
+  const refreshBtn = document.getElementById('refreshBtn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', () => loadDashboard(true));
+  }
+
+  // Auto refresh toggle
+  const autoToggle = document.getElementById('autoRefreshToggle');
+  if (autoToggle) {
+    autoToggle.addEventListener('change', (e) => {
+      state.autoRefreshEnabled = e.target.checked;
+      startAutoRefresh();
+    });
+  }
+
+  // Insights form
+  const form = document.getElementById('insightsForm');
+  if (form) {
+    form.addEventListener('submit', handleInsightsSubmit);
+  }
+
+  // Setup filters
+  setupHistoryFilter();
+
+  // Load initial data
+  loadDashboard();
+
+  // Start timers
+  updateTimers();
+  state.timerInterval = setInterval(updateTimers, 1000);
+
+  // Start auto refresh
   startAutoRefresh();
+
+  // Register service worker
+  registerServiceWorker();
 });
 
-document.getElementById("copyrightYear").textContent = new Date().getFullYear();
-registerServiceWorker();
-startAutoRefresh();
-
-loadDashboard().catch((error) => {
-  document.getElementById("lastUpdated").textContent = error.message;
+// Cleanup on unload
+window.addEventListener('unload', () => {
+  if (state.refreshTimerId) clearInterval(state.refreshTimerId);
+  if (state.refreshCountdownId) clearInterval(state.refreshCountdownId);
+  if (state.timerInterval) clearInterval(state.timerInterval);
 });

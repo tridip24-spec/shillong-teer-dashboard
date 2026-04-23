@@ -1,279 +1,193 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { 
-  TrendingUp, 
-  Target, 
-  Activity, 
-  RefreshCw,
-  Zap,
-  Clock,
-  History,
-  Info,
-  ShieldCheck,
-  ChevronRight,
-  BarChart3
-} from 'lucide-react';
-
-export default function App() {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  const [lastUpdated, setLastUpdated] = useState(new Date());
-  const [countdown, setCountdown] = useState({ fr: '', sr: '' });
-
-  // 1. DATA FETCHING (Dynamic Refresh)
-  const fetchData = async (isSilent = false) => {
-    if (!isSilent) setLoading(true);
-    try {
-      const origin = window.location.origin;
-      const isSandbox = !origin || origin === 'null' || origin.includes('usercontent.goog') || origin.startsWith('blob:');
-      const apiBase = isSandbox ? 'http://localhost:3000' : origin;
-      
-      const res = await fetch(`${apiBase.replace(/\/$/, '')}/api/dashboard`, { mode: 'cors' });
-      if (!res.ok) throw new Error(`Status ${res.status}`);
-      
-      const json = await res.json();
-      setData(json);
-      setLastUpdated(new Date());
-      setLoading(false);
-      setError(null);
-    } catch (err) {
-      console.error(err);
-      setError(err.message);
-      setLoading(false);
-    }
-  };
-
-  // Initial load and polling interval
-  useEffect(() => {
-    fetchData();
-    const interval = setInterval(() => fetchData(true), 60000); // Silent refresh every min
-    return () => clearInterval(interval);
-  }, []);
-
-  // 2. LIVE COUNTDOWN LOGIC
-  useEffect(() => {
-    const timer = setInterval(() => {
-      const now = new Date();
-      const getTarget = (hour, min) => {
-        const t = new Date();
-        t.setHours(hour, min, 0, 0);
-        if (now > t) t.setDate(t.getDate() + 1);
-        const diff = t - now;
-        const h = Math.floor(diff / 3600000);
-        const m = Math.floor((diff % 3600000) / 60000);
-        const s = Math.floor((diff % 60000) / 1000);
-        return `${h}h ${m}m ${s}s`;
-      };
-      setCountdown({
-        fr: getTarget(16, 0), // 4:00 PM
-        sr: getTarget(16, 45) // 4:45 PM
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, []);
-
-  if (loading && !data) {
-    return (
-      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center">
-        <div className="relative w-24 h-24">
-          <div className="absolute inset-0 border-4 border-indigo-500/10 rounded-full"></div>
-          <div className="absolute inset-0 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-          <Zap className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-500 w-8 h-8 fill-indigo-500" />
-        </div>
-        <p className="mt-8 text-indigo-200/50 font-mono tracking-widest text-xs animate-pulse uppercase">Connecting to Analysis Engine</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="min-h-screen bg-[#050505] text-slate-300 font-sans p-4 lg:p-8 selection:bg-indigo-500/30">
-      
-      {/* BACKGROUND DECOR */}
-      <div className="fixed inset-0 pointer-events-none opacity-20">
-        <div className="absolute top-0 right-0 w-[500px] h-[500px] bg-indigo-600/20 rounded-full blur-[120px]"></div>
-        <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px]"></div>
-      </div>
-
-      <div className="relative max-w-7xl mx-auto space-y-8">
-        
-        {/* TOP STATUS BAR */}
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="text-[10px] font-black tracking-widest text-emerald-500 uppercase">Live Prediction Grid</span>
-            </div>
-            <h1 className="text-4xl font-black text-white tracking-tighter">
-              TEER<span className="text-indigo-500 underline decoration-indigo-500/30 underline-offset-8">PRO</span>
-            </h1>
-          </div>
-
-          <div className="flex gap-4">
-            <div className="bg-slate-900/50 border border-white/5 backdrop-blur-xl p-4 rounded-2xl flex items-center gap-4">
-              <div className="text-right border-r border-white/10 pr-4">
-                <p className="text-[9px] font-bold text-slate-500 uppercase">Next Round</p>
-                <p className="text-sm font-mono text-indigo-400">{countdown.fr}</p>
-              </div>
-              <div className="flex gap-3">
-                <div className="text-center">
-                  <span className="block text-[10px] font-bold text-slate-500">FR</span>
-                  <span className="text-xl font-black text-white">{data?.live?.firstRound || '--'}</span>
-                </div>
-                <div className="text-center">
-                  <span className="block text-[10px] font-bold text-slate-500">SR</span>
-                  <span className="text-xl font-black text-white">{data?.live?.secondRound || '--'}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* MAIN ANALYSIS GRID */}
-        <main className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          
-          {/* LEFT: Prediction Engine */}
-          <section className="lg:col-span-8 space-y-8">
-            <div className="bg-gradient-to-br from-slate-900/80 to-black border border-white/5 rounded-[2.5rem] p-8 shadow-2xl relative overflow-hidden group">
-              <div className="absolute top-0 right-0 p-8">
-                <Zap className="w-12 h-12 text-white/5 group-hover:text-indigo-500/20 transition-colors" />
-              </div>
-              
-              <div className="flex items-center gap-4 mb-10">
-                <div className="p-3 bg-indigo-500 rounded-2xl shadow-[0_0_20px_rgba(99,102,241,0.4)]">
-                  <Target className="w-6 h-6 text-white" />
-                </div>
-                <div>
-                  <h2 className="text-2xl font-black text-white tracking-tight uppercase">High Probability Targets</h2>
-                  <p className="text-xs text-slate-500 font-medium">Algorithmic shift analysis for {data?.live?.date}</p>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {data?.predictions?.possibleNumbers.slice(0, 8).map((pred, idx) => (
-                  <div key={idx} className="relative bg-white/[0.02] border border-white/5 rounded-3xl p-6 hover:bg-white/[0.05] transition-all hover:-translate-y-1">
-                    <div className="absolute top-3 right-4">
-                       <span className={`text-[8px] font-black px-2 py-0.5 rounded-full ${idx < 4 ? 'bg-indigo-500/20 text-indigo-400' : 'bg-slate-500/10 text-slate-500'}`}>
-                         {idx < 4 ? 'HOT' : 'STABLE'}
-                       </span>
-                    </div>
-                    <div className="flex flex-col items-center py-2">
-                      <span className="text-4xl font-black text-white mb-2">{pred.value}</span>
-                      <div className="w-full h-1 bg-white/5 rounded-full overflow-hidden mb-3">
-                        <div 
-                          className="h-full bg-indigo-500 transition-all duration-1000" 
-                          style={{ width: `${Math.min(100, (pred.score / 20) * 100)}%` }}
-                        ></div>
-                      </div>
-                      <span className="text-[8px] font-bold text-slate-500 text-center uppercase leading-tight line-clamp-1">{pred.reason}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Shift & Velocity Analytics */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-              <div className="bg-slate-900/30 border border-white/5 rounded-[2rem] p-6 backdrop-blur-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xs font-black text-slate-500 tracking-widest uppercase">House Momentum</h3>
-                  <TrendingUp className="w-4 h-4 text-indigo-500" />
-                </div>
-                <div className="space-y-5">
-                  {data?.analytics?.risingHouses.map((house, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-white font-bold">House {house.value}</span>
-                        <span className="text-indigo-400">+{house.shift} pts</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                        <div className="h-full bg-indigo-500 opacity-60" style={{ width: `${(house.current / 10) * 100}%` }}></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              <div className="bg-slate-900/30 border border-white/5 rounded-[2rem] p-6 backdrop-blur-sm">
-                <div className="flex items-center justify-between mb-6">
-                  <h3 className="text-xs font-black text-slate-500 tracking-widest uppercase">Ending Velocity</h3>
-                  <BarChart3 className="w-4 h-4 text-cyan-500" />
-                </div>
-                <div className="space-y-5">
-                  {data?.analytics?.risingEndings.map((ending, idx) => (
-                    <div key={idx} className="space-y-1">
-                      <div className="flex justify-between items-center text-xs">
-                        <span className="text-white font-bold">Ending {ending.value}</span>
-                        <span className="text-cyan-400">+{ending.shift} pts</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
-                        <div className="h-full bg-cyan-500 opacity-60" style={{ width: `${(ending.current / 10) * 100}%` }}></div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </section>
-
-          {/* RIGHT: Live Feed & Meta */}
-          <aside className="lg:col-span-4 space-y-6">
-            <div className="bg-slate-900/80 border border-white/5 rounded-[2rem] p-6 shadow-xl backdrop-blur-xl">
-              <h3 className="text-xs font-black text-white/40 uppercase tracking-widest mb-6 flex items-center justify-between">
-                Daily Stream
-                <History className="w-4 h-4" />
-              </h3>
-              
-              <div className="space-y-2 overflow-y-auto max-h-[480px] pr-2 custom-scrollbar">
-                {data?.history?.slice(0, 12).map((row, idx) => (
-                  <div key={idx} className="flex justify-between items-center p-3 bg-white/[0.02] border border-white/5 rounded-2xl hover:bg-white/[0.04] transition-colors">
-                    <span className="text-[10px] font-mono text-slate-500 uppercase">{row.date}</span>
-                    <div className="flex gap-4">
-                      <span className="text-sm font-black text-white">{row.firstRound}</span>
-                      <span className="text-sm font-black text-indigo-400">{row.secondRound}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            <div className="bg-indigo-600/10 border border-indigo-500/20 rounded-3xl p-6 relative overflow-hidden">
-              <div className="relative z-10 space-y-4">
-                <div className="flex items-center gap-2 text-indigo-400">
-                  <ShieldCheck className="w-5 h-5" />
-                  <span className="text-xs font-black uppercase tracking-widest">System Integrity</span>
-                </div>
-                <p className="text-[11px] leading-relaxed text-slate-400">
-                  Calculated using <span className="text-white">Transition Modeling</span> and <span className="text-white">Weighted Recurrence</span>. Data synced from official Shillong gateways.
-                </p>
-                <div className="text-[9px] text-slate-600 font-mono">
-                  REFRESHED: {lastUpdated.toLocaleTimeString()}
-                </div>
-              </div>
-            </div>
-          </aside>
-
-        </main>
-
-        <footer className="pt-12 pb-8 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-6">
-          <p className="text-[10px] font-bold text-slate-600 uppercase tracking-[0.3em]">
-            TeerPro Analytics Terminal v4.0
-          </p>
-          <div className="flex gap-8 text-[10px] font-black text-slate-500 uppercase tracking-widest">
-            <span className="hover:text-indigo-500 cursor-pointer transition-colors">Network Status: Nominal</span>
-            <span className="hover:text-indigo-500 cursor-pointer transition-colors">Latency: 24ms</span>
-          </div>
-        </footer>
-      </div>
-
-      <style dangerouslySetInnerHTML={{ __html: `
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.05); border-radius: 10px; }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.1); }
-      `}} />
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shillong Teer Pro - Live Prediction Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#050505">
+  <meta name="description" content="Real-time Shillong Teer prediction and analytics dashboard">
+</head>
+<body>
+  <div class="app">
+    <!-- Background Decorations -->
+    <div class="bg-decoration">
+      <div class="blob blob-1"></div>
+      <div class="blob blob-2"></div>
+      <div class="blob blob-3"></div>
     </div>
-  );
-}
+
+    <!-- Header -->
+    <header class="header">
+      <div class="container">
+        <div class="header-content">
+          <div class="logo-section">
+            <div class="logo">
+              <span class="pulse"></span>
+              <h1>TEER<span class="accent">PRO</span></h1>
+            </div>
+            <p class="tagline">Real-time Prediction Engine</p>
+          </div>
+          <div class="header-controls">
+            <div class="control-btn" id="refreshBtn" title="Refresh data">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M23 4v6h-6"></path>
+                <path d="M1 20v-6h6"></path>
+                <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"></path>
+              </svg>
+            </div>
+            <label class="toggle-switch">
+              <input type="checkbox" id="autoRefreshToggle" checked>
+              <span class="slider"></span>
+              <span class="label-text">Auto</span>
+            </label>
+            <div class="status-indicator" id="statusIndicator">Connected</div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <div class="container">
+        <!-- Live Results Card -->
+        <section class="live-section">
+          <div class="section-header">
+            <h2>TODAY'S RESULTS</h2>
+            <span class="update-time" id="lastUpdated">Loading...</span>
+          </div>
+          <div class="live-results-grid">
+            <div class="live-card">
+              <div class="card-label">Date</div>
+              <div class="card-value" id="liveDate">--</div>
+            </div>
+            <div class="live-card highlight">
+              <div class="card-label">First Round (FR)</div>
+              <div class="card-value large" id="firstRound">--</div>
+              <div class="card-meta">House: <span id="frHouse">-</span> | Ending: <span id="frEnding">-</span></div>
+            </div>
+            <div class="live-card highlight">
+              <div class="card-label">Second Round (SR)</div>
+              <div class="card-value large" id="secondRound">--</div>
+              <div class="card-meta">House: <span id="srHouse">-</span> | Ending: <span id="srEnding">-</span></div>
+            </div>
+            <div class="live-card">
+              <div class="card-label">Common Numbers</div>
+              <div class="chips" id="publishedCommonNumbers"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Countdown Timers -->
+        <section class="timers-section">
+          <div class="timer-card">
+            <div class="timer-label">Next First Round</div>
+            <div class="timer-display" id="frTimer">--:--:--</div>
+            <span class="timer-note">4:00 PM</span>
+          </div>
+          <div class="timer-card">
+            <div class="timer-label">Next Second Round</div>
+            <div class="timer-display" id="srTimer">--:--:--</div>
+            <span class="timer-note">4:45 PM</span>
+          </div>
+        </section>
+
+        <!-- Daily Results Section -->
+        <section class="daily-results-section">
+          <div class="section-header">
+            <h2>DAILY RESULTS</h2>
+            <input type="text" class="search-input" id="historyFilter" placeholder="Search results...">
+          </div>
+          <div class="results-table-wrapper">
+            <div class="results-table" id="dailyResultsContainer">
+              <!-- Results will be populated here -->
+            </div>
+          </div>
+          <div class="table-meta" id="historyCount"></div>
+        </section>
+
+        <!-- Predictions Grid -->
+        <section class="predictions-section">
+          <div class="section-header">
+            <h2>HIGH PROBABILITY TARGETS</h2>
+            <p class="subtitle">Algorithmic analysis for today</p>
+          </div>
+          <div class="predictions-grid" id="predictionsGrid">
+            <!-- Predictions will be populated here -->
+          </div>
+        </section>
+
+        <!-- Analytics Grid -->
+        <section class="analytics-section">
+          <div class="section-header">
+            <h2>TREND ANALYSIS</h2>
+          </div>
+          
+          <div class="analytics-grid">
+            <!-- Top Houses -->
+            <div class="analytics-card">
+              <h3>Top Houses</h3>
+              <div class="chips" id="topHouses"></div>
+            </div>
+
+            <!-- Top Endings -->
+            <div class="analytics-card">
+              <h3>Top Endings</h3>
+              <div class="chips" id="topEndings"></div>
+            </div>
+
+            <!-- Rising Houses -->
+            <div class="analytics-card">
+              <h3>Rising Houses</h3>
+              <div class="rising-list" id="risingHouses"></div>
+            </div>
+
+            <!-- Rising Endings -->
+            <div class="analytics-card">
+              <h3>Rising Endings</h3>
+              <div class="rising-list" id="risingEndings"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Direct Numbers -->
+        <section class="direct-numbers-section">
+          <div class="section-header">
+            <h2>STRONGEST DIRECT NUMBERS</h2>
+          </div>
+          <div class="chips" id="strongDirectNumbers"></div>
+        </section>
+
+        <!-- Insights Form -->
+        <section class="insights-section">
+          <div class="section-header">
+            <h2>CUSTOM PREDICTION</h2>
+            <p class="subtitle">Enter first and second round to get custom analysis</p>
+          </div>
+          <form id="insightsForm" class="insights-form">
+            <input type="text" id="seedFr" placeholder="First Round (FR)" maxlength="2">
+            <input type="text" id="seedSr" placeholder="Second Round (SR)" maxlength="2">
+            <button type="submit" class="btn btn-primary">Analyze</button>
+          </form>
+          <div class="insight-note" id="insightNote"></div>
+          <div class="chips" id="possibleNumbers"></div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <div class="container">
+        <p>&copy; <span id="copyrightYear"></span> Shillong Teer Pro. For informational purposes only.</p>
+        <div class="footer-links">
+          <a href="/privacy.html">Privacy</a>
+          <a href="/disclaimer.html">Disclaimer</a>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
