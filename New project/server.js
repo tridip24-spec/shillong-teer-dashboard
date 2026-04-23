@@ -15,6 +15,11 @@ const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
 const LIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 const HISTORY_CACHE_TTL_MS = 4 * 60 * 60 * 1000;
 
+// Background refresh configuration
+const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const FETCH_RETRY_ATTEMPTS = 3;
+const FETCH_RETRY_DELAY_MS = 1000;
+
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -26,6 +31,11 @@ const MIME_TYPES = {
   ".jpg": "image/jpeg",
   ".ico": "image/x-icon",
 };
+
+// Background refresh state management
+let refreshInProgress = false;
+let lastRefreshError = null;
+let lastSuccessfulRefresh = null;
 
 ensureDir(DATA_DIR);
 
@@ -96,21 +106,33 @@ function safeNumberToken(value) {
   return null;
 }
 
-async function fetchText(url) {
-  const response = await fetch(url, {
-    headers: {
-      "user-agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-      "accept-language": "en-US,en;q=0.9",
-      referer: "https://shillongteerresultlist.co.in/",
-    },
-  });
+async function fetchTextWithRetry(url, attempt = 1) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "accept-language": "en-US,en;q=0.9",
+        referer: "https://shillongteerresultlist.co.in/",
+      },
+    });
 
-  if (!response.ok) {
-    throw new Error(`Failed request ${response.status} for ${url}`);
+    if (!response.ok) {
+      throw new Error(`Failed request ${response.status} for ${url}`);
+    }
+
+    return response.text();
+  } catch (error) {
+    if (attempt < FETCH_RETRY_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, FETCH_RETRY_DELAY_MS * attempt));
+      return fetchTextWithRetry(url, attempt + 1);
+    }
+    throw error;
   }
+}
 
-  return response.text();
+async function fetchText(url) {
+  return fetchTextWithRetry(url);
 }
 
 function parseHistoryPage(html) {
@@ -696,6 +718,51 @@ function serveStatic(requestPath, response) {
   });
 }
 
+/**
+ * Background refresh function with async safety and retry logic
+ * Ensures only one refresh runs at a time to prevent overlapping calls
+ */
+async function backgroundRefresh() {
+  if (refreshInProgress) {
+    return;
+  }
+
+  refreshInProgress = true;
+
+  try {
+    await Promise.all([
+      loadHistory(true),
+      loadLive(true),
+    ]);
+    lastSuccessfulRefresh = new Date().toISOString();
+    lastRefreshError = null;
+    console.log(`[AUTO-REFRESH] Completed at ${lastSuccessfulRefresh}`);
+  } catch (error) {
+    lastRefreshError = error.message;
+    console.error(`[AUTO-REFRESH] Error: ${error.message}`);
+  } finally {
+    refreshInProgress = false;
+  }
+}
+
+/**
+ * Start the background refresh timer
+ * Only refreshes if cache is stale, respects TTL settings
+ */
+function startBackgroundRefresh() {
+  console.log(`[AUTO-REFRESH] Starting background refresh every ${AUTO_REFRESH_INTERVAL_MS / 1000} seconds`);
+
+  // Initial refresh after startup delay
+  setTimeout(() => {
+    backgroundRefresh();
+  }, 10000);
+
+  // Recurring refresh at interval
+  setInterval(() => {
+    backgroundRefresh();
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
 
@@ -722,6 +789,11 @@ const server = http.createServer(async (request, response) => {
           fetchedAt: new Date().toISOString(),
           usedCache: historyPayload.fromCache || livePayload.fromCache,
           warnings: [historyPayload.warning, livePayload.warning].filter(Boolean),
+          autoRefresh: {
+            lastSuccessfulRefresh,
+            lastError: lastRefreshError,
+            nextRefreshIn: `${AUTO_REFRESH_INTERVAL_MS / 1000}s`,
+          },
         },
       });
       return;
@@ -767,4 +839,5 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(PORT, () => {
   console.log(`Shillong Teer dashboard running at http://localhost:${PORT}`);
+  startBackgroundRefresh();
 });
