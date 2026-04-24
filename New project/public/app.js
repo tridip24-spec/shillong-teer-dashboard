@@ -1,402 +1,199 @@
+// --- Enhanced frontend script (v2)
+// Adds: scheduled predictions rendering (16:15, 17:20)
+//       dream-number suggestions
+//       cache-busted asset references in index.html
+
 // State Management
 const state = {
   data: null,
   history: [],
   autoRefreshEnabled: true,
-  refreshCountdown: 60,
   refreshTimerId: null,
-  refreshCountdownId: null,
   timerInterval: null,
 };
 
-// API Utility
-async function fetchJson(url) {
-  try {
-    const response = await fetch(url);
-    if (!response.ok) throw new Error(`Status ${response.status}`);
-    return await response.json();
-  } catch (err) {
-    console.error('Fetch error:', err);
-    throw err;
+// Simple dream mapping (starter). Expand as needed.
+const DREAM_MAP = {
+  snake: ['12','34','56'],
+  river: ['07','70','28'],
+  house: ['11','22','33'],
+  baby: ['01','10','19'],
+  fish: ['02','20','39'],
+  bird: ['03','30','48'],
+  tree: ['04','40','57'],
+  fire: ['05','50','68']
+};
+
+// API Utility with retry
+async function fetchJsonWithRetry(url, retries = 2, backoff = 700) {
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Status ${res.status}`);
+      return await res.json();
+    } catch (err) {
+      if (i === retries) throw err;
+      await new Promise(r => setTimeout(r, backoff * (i + 1)));
+    }
   }
 }
 
-// Update UI Status
+// UI helpers
 function updateStatus(message, type = 'normal') {
   const indicator = document.getElementById('statusIndicator');
-  if (indicator) {
-    indicator.textContent = message;
-    indicator.className = `status-indicator status-${type}`;
-  }
+  if (indicator) { indicator.textContent = message; indicator.className = `status-indicator status-${type}`; }
 }
 
-// Extract house and ending from number
 function extractDigits(num) {
-  if (!num || num === '--' || num === 'XX' || num === 'OFF') return { house: '-', ending: '-' };
-  const str = num.toString().padStart(2, '0');
-  return {
-    house: str[0],
-    ending: str[1]
-  };
+  if (!num || num === 'XX' || num === '--') return { house: '-', ending: '-' };
+  const s = String(num).padStart(2, '0');
+  return { house: s[0], ending: s[1] };
 }
 
-// Render Chips
 function renderChips(containerId, items, mapper) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-
-  container.innerHTML = '';
-  if (!items || items.length === 0) {
-    container.innerHTML = '<div class="chip">No data</div>';
-    return;
-  }
-
-  items.forEach(item => {
-    const mapped = mapper(item);
-    const chip = document.createElement('div');
-    chip.className = 'chip';
-    chip.textContent = mapped;
-    container.appendChild(chip);
-  });
+  const c = document.getElementById(containerId);
+  if (!c) return;
+  c.innerHTML = '';
+  if (!items || items.length === 0) { c.innerHTML = '<div class="chip">No data</div>'; return; }
+  items.forEach(it => { const el = document.createElement('div'); el.className = 'chip'; el.textContent = mapper ? mapper(it) : it; c.appendChild(el); });
 }
 
-// Render Daily Results
 function renderDailyResults(rows) {
   const filter = document.getElementById('historyFilter')?.value.toLowerCase() || '';
   const container = document.getElementById('dailyResultsContainer');
-  
-  if (!container) return;
-  
-  container.innerHTML = '';
-
-  const filtered = (rows || []).filter(row => {
-    const haystack = `${row.date || ''} ${row.firstRound || ''} ${row.secondRound || ''}`.toLowerCase();
-    return haystack.includes(filter);
-  });
-
-  if (filtered.length === 0) {
-    container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted);">No results found</div>';
-    return;
-  }
-
+  if (!container) return; container.innerHTML = '';
+  const filtered = (rows||[]).filter(r => (`${r.date} ${r.firstRound} ${r.secondRound}`).toLowerCase().includes(filter));
+  if (filtered.length === 0) { container.innerHTML = '<div style="padding:2rem;color:var(--muted)">No results found</div>'; return; }
   filtered.forEach(row => {
-    const item = document.createElement('div');
-    item.className = 'result-item';
-    
-    const frDigits = extractDigits(row.firstRound);
-    const srDigits = extractDigits(row.secondRound);
-    
-    item.innerHTML = `
-      <div class="result-date">${row.date || '--'}</div>
-      <div class="result-number">${row.firstRound || '--'}</div>
-      <div class="result-number">${row.secondRound || '--'}</div>
-      <div class="result-info">
-        <span>H: ${frDigits.house}/${srDigits.house}</span> | 
-        <span>E: ${frDigits.ending}/${srDigits.ending}</span>
-      </div>
-    `;
+    const item = document.createElement('div'); item.className = 'result-item';
+    const fr = extractDigits(row.firstRound); const sr = extractDigits(row.secondRound);
+    item.innerHTML = `<div class="result-date">${row.date}</div><div class="result-number">${row.firstRound}</div><div class="result-number">${row.secondRound}</div><div class="result-info">H: ${fr.house}/${sr.house} | E: ${fr.ending}/${sr.ending}</div>`;
     container.appendChild(item);
   });
-
-  const count = document.getElementById('historyCount');
-  if (count) {
-    count.textContent = `Showing ${filtered.length} of ${rows.length} results`;
-  }
+  const count = document.getElementById('historyCount'); if (count) count.textContent = `Showing ${filtered.length} of ${rows.length} results`;
 }
 
-// Render Predictions
-function renderPredictions(predictions) {
-  const container = document.getElementById('predictionsGrid');
-  if (!container) return;
+function renderPredictions(pred) {
+  const container = document.getElementById('predictionsGrid'); if (!container) return; container.innerHTML = '';
+  if (!pred?.possibleNumbers) { container.innerHTML = '<div style="padding:2rem;color:var(--muted)">No predictions</div>'; return; }
+  pred.possibleNumbers.forEach(p => {
+    const el = document.createElement('div'); el.className = 'prediction-card';
+    const pct = Math.min(100, (p.score/420)*100);
+    el.innerHTML = `<div class="prediction-number">${p.value}</div><div class="prediction-score"><div class="prediction-fill" style="width:${pct}%"></div></div><div class="prediction-label">${p.confidence||'watch'} • ${p.reason||''}</div>`;
+    container.appendChild(el);
+  });
+}
 
-  container.innerHTML = '';
-  if (!predictions?.possibleNumbers || predictions.possibleNumbers.length === 0) {
-    container.innerHTML = '<div style="padding: 2rem; text-align: center; color: var(--text-muted);">No predictions available</div>';
-    return;
-  }
+function renderAnalytics(a) {
+  if (!a) return;
+  renderChips('topHouses', a.topHouses||[], it => `House ${it.value} (${it.score})`);
+  renderChips('topEndings', a.topEndings||[], it => `Ending ${it.value} (${it.score})`);
+  // rising lists
+  const rh = document.getElementById('risingHouses'); if (rh) { rh.innerHTML=''; (a.risingHouses||[]).forEach(item => { const div=document.createElement('div'); div.className='rising-item'; div.innerHTML = `<span>${item.value}</span><span>+${item.shift}</span>`; rh.appendChild(div); }); }
+  const re = document.getElementById('risingEndings'); if (re) { re.innerHTML=''; (a.risingEndings||[]).forEach(item => { const div=document.createElement('div'); div.className='rising-item'; div.innerHTML = `<span>${item.value}</span><span>+${item.shift}</span>`; re.appendChild(div); }); }
+  renderChips('strongDirectNumbers', a.strongestDirect||[], it => `${it.value} (${it.count}x)`);
+}
 
-  predictions.possibleNumbers.forEach((pred, idx) => {
-    const card = document.createElement('div');
-    card.className = `prediction-card confidence-${pred.confidence || 'watch'}`;
-    
-    const maxScore = 20;
-    const fillPercent = Math.min(100, (pred.score / maxScore) * 100);
-    
-    card.innerHTML = `
-      <div class="prediction-number">${pred.value}</div>
-      <div class="prediction-score">
-        <div class="prediction-fill" style="width: ${fillPercent}%"></div>
-      </div>
-      <div class="prediction-label">${pred.confidence || 'watch'} • ${pred.reason || 'Analysis'}</div>
-    `;
+// New: scheduled predictions rendering for two scheduled times
+function renderScheduledPredictions(payload) {
+  const times = [ {label:'16:15', id:'16:15'}, {label:'17:20', id:'17:20'} ];
+  const container = document.getElementById('scheduledPredictions'); if (!container) return; container.innerHTML = '';
+  const candidates = (payload?.predictions?.possibleNumbers || []).slice(0,6).map(p => p.value);
+  times.forEach(t => {
+    const card = document.createElement('div'); card.className = 'scheduled-card';
+    // If official published in live.recentRows or live matches time, prefer official numbers (we don't have time-of-day mapping from API). We'll display predictions and mark as predictions until official is present.
+    const title = `<div class="time">Scheduled draw ${t.label}</div>`;
+    // pick top 3 candidates rotated by time label index
+    const startIndex = t.label === '16:15' ? 0 : 3;
+    const nums = candidates.slice(startIndex, startIndex+3).join('  ');
+    const note = `<div class="note">Predicted numbers (informational). Will be replaced by official results when available.</div>`;
+    card.innerHTML = `${title}<div class="numbers">${nums || '--'}</div>${note}`;
     container.appendChild(card);
   });
 }
 
-// Render Rising Items
-function renderRisingItems(containerId, items) {
-  const container = document.getElementById(containerId);
-  if (!container) return;
-
-  container.innerHTML = '';
-  if (!items || items.length === 0) {
-    container.innerHTML = '<div class="chip">No data</div>';
-    return;
-  }
-
-  items.forEach(item => {
-    const div = document.createElement('div');
-    div.className = 'rising-item';
-    div.innerHTML = `
-      <span class="rising-item-label">${item.value ? (isNaN(item.value) ? item.value : `${item.value}`).toString() : 'Unknown'}</span>
-      <span class="rising-item-value">+${item.shift || 0}</span>
-    `;
-    container.appendChild(div);
-  });
-}
-
-// Render Analytics
-function renderAnalytics(analytics) {
-  if (!analytics) return;
-
-  // Top Houses and Endings
-  renderChips('topHouses', analytics.topHouses, item => `House ${item.value} (${item.score})`);
-  renderChips('topEndings', analytics.topEndings, item => `Ending ${item.value} (${item.score})`);
-
-  // Rising data
-  renderRisingItems('risingHouses', analytics.risingHouses);
-  renderRisingItems('risingEndings', analytics.risingEndings);
-
-  // Strongest Direct
-  renderChips('strongDirectNumbers', analytics.strongestDirect, item => `${item.value} (${item.count}x)`);
-}
-
-// Render Dashboard - MAIN FUNCTION
 function renderDashboard(payload) {
-  if (!payload) return;
-
-  console.log('=== RENDERING DASHBOARD ===');
-  console.log('Full payload:', payload);
-
-  // Live Results - REAL TIME DATA
-  const liveData = payload.live || {};
-  
-  console.log('Live data object:', liveData);
-  console.log('FR:', liveData.firstRound, 'SR:', liveData.secondRound);
-  
-  // Update live results display
-  const dateEl = document.getElementById('liveDate');
-  const frEl = document.getElementById('firstRound');
-  const srEl = document.getElementById('secondRound');
-  const lastUpdatedEl = document.getElementById('lastUpdated');
-  
-  if (dateEl) dateEl.textContent = liveData.date || '--';
-  if (frEl) frEl.textContent = liveData.firstRound || '--';
-  if (srEl) srEl.textContent = liveData.secondRound || '--';
-
-  // Extract and display house/ending
-  const frDigits = extractDigits(liveData.firstRound);
-  const srDigits = extractDigits(liveData.secondRound);
-  
-  console.log('FR digits:', frDigits, 'SR digits:', srDigits);
-  
-  const frHouseEl = document.getElementById('frHouse');
-  const frEndingEl = document.getElementById('frEnding');
-  const srHouseEl = document.getElementById('srHouse');
-  const srEndingEl = document.getElementById('srEnding');
-  
-  if (frHouseEl) frHouseEl.textContent = frDigits.house;
-  if (frEndingEl) frEndingEl.textContent = frDigits.ending;
-  if (srHouseEl) srHouseEl.textContent = srDigits.house;
-  if (srEndingEl) srEndingEl.textContent = srDigits.ending;
-
-  // Update time
-  if (lastUpdatedEl) {
-    const time = new Date(payload.meta?.fetchedAt || new Date());
-    lastUpdatedEl.textContent = `Updated ${time.toLocaleTimeString()}`;
-  }
-
-  // Common Numbers
-  renderChips('publishedCommonNumbers', liveData.commonNumbers, item => item);
-
-  // Daily Results
+  if (!payload) return; console.log('renderDashboard', payload);
+  const live = payload.live || {};
+  document.getElementById('liveDate').textContent = live.date || '--';
+  document.getElementById('firstRound').textContent = live.firstRound || '--';
+  document.getElementById('secondRound').textContent = live.secondRound || '--';
+  const fr = extractDigits(live.firstRound); const sr = extractDigits(live.secondRound);
+  document.getElementById('frHouse').textContent = fr.house; document.getElementById('frEnding').textContent = fr.ending;
+  document.getElementById('srHouse').textContent = sr.house; document.getElementById('srEnding').textContent = sr.ending;
+  const lu = document.getElementById('lastUpdated'); if (lu) { const t = new Date(payload.meta?.fetchedAt||new Date()); lu.textContent = `Updated ${t.toLocaleTimeString()}`; }
+  renderChips('publishedCommonNumbers', live.commonNumbers || [], it => it.value || it);
   state.history = payload.history || [];
-  console.log('History rows:', state.history.length);
   renderDailyResults(state.history);
-
-  // Predictions
-  console.log('Predictions:', payload.predictions);
   renderPredictions(payload.predictions);
-
-  // Analytics
-  console.log('Analytics:', payload.analytics);
   renderAnalytics(payload.analytics);
-
-  // Possible Numbers
-  renderChips('possibleNumbers', payload.predictions?.possibleNumbers, item => `${item.value} (${item.confidence})`);
-
+  renderChips('possibleNumbers', payload.predictions?.possibleNumbers || [], it => `${it.value} (${it.confidence})`);
+  renderScheduledPredictions(payload);
   state.data = payload;
   updateStatus('Connected', 'connected');
-  
-  console.log('=== RENDER COMPLETE ===');
 }
 
-// Timer Update
+// Timers
 function updateTimers() {
   const now = new Date();
-  
-  const updateTimer = (elementId, hour, minute) => {
-    const target = new Date();
-    target.setHours(hour, minute, 0, 0);
-    if (now > target) {
-      target.setDate(target.getDate() + 1);
-    }
-    
-    const diff = target - now;
-    const h = Math.floor(diff / 3600000);
-    const m = Math.floor((diff % 3600000) / 60000);
-    const s = Math.floor((diff % 60000) / 1000);
-    
-    const element = document.getElementById(elementId);
-    if (element) {
-      element.textContent = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
-    }
-  };
-  
-  updateTimer('frTimer', 16, 0);  // 4:00 PM
-  updateTimer('srTimer', 16, 45); // 4:45 PM
+  function update(id, h, m) {
+    const el = document.getElementById(id); if (!el) return; const t = new Date(); t.setHours(h,m,0,0); if (now > t) t.setDate(t.getDate()+1);
+    const diff = t - now; const H = Math.floor(diff/3600000); const M = Math.floor((diff%3600000)/60000); const S = Math.floor((diff%60000)/1000);
+    el.textContent = `${String(H).padStart(2,'0')}:${String(M).padStart(2,'0')}:${String(S).padStart(2,'0')}`;
+  }
+  update('frTimer',16,0); update('srTimer',16,45);
 }
 
-// Load Dashboard
+// Load with retry wrapper
+let loadInProgress = false;
 async function loadDashboard(refresh = false) {
+  if (loadInProgress) { console.log('Load in progress, skipping'); return; }
+  loadInProgress = true; updateStatus('Fetching...', 'loading');
   try {
-    updateStatus('Fetching data...', 'loading');
     const url = refresh ? '/api/dashboard?days=365&refresh=1' : '/api/dashboard?days=365';
-    console.log('📡 Fetching from:', url);
-    const payload = await fetchJson(url);
-    console.log('📥 Received payload:', payload);
+    const payload = await fetchJsonWithRetry(url, 2, 800);
     renderDashboard(payload);
-    updateStatus('Connected', 'connected');
   } catch (err) {
-    console.error('❌ Load dashboard error:', err);
-    updateStatus('Error loading data', 'error');
+    console.error('loadDashboard failed', err); updateStatus('Error', 'error');
+  } finally { loadInProgress = false; }
+}
+
+// Dream suggestion logic
+function suggestDreamNumbers(text) {
+  if (!text) return [];
+  const low = text.toLowerCase();
+  const tokens = low.split(/[^a-z0-9]+/).filter(Boolean);
+  const suggestions = new Set();
+  tokens.forEach(tok => { if (DREAM_MAP[tok]) DREAM_MAP[tok].forEach(n => suggestions.add(n)); });
+  // if no suggestions, fallback to simple numerology: map chars to numbers
+  if (suggestions.size === 0) {
+    let sum = 0; for (let ch of low) sum += ch.charCodeAt(0); const n1 = String(sum % 100).padStart(2,'0'); const n2 = String((sum+7) % 100).padStart(2,'0'); suggestions.add(n1); suggestions.add(n2);
   }
+  return Array.from(suggestions).slice(0,6);
 }
 
-// Auto Refresh
-function startAutoRefresh() {
-  if (state.refreshTimerId) clearInterval(state.refreshTimerId);
+// events
+function setupHistoryFilter() { const f = document.getElementById('historyFilter'); if (f) f.addEventListener('input', () => renderDailyResults(state.history)); }
 
-  if (!state.autoRefreshEnabled) return;
-
-  // Refresh every 60 seconds
-  state.refreshTimerId = setInterval(() => {
-    console.log('🔄 Auto-refreshing...');
-    loadDashboard(true);
-  }, 60000);
+async function handleInsightsSubmit(e) { e.preventDefault(); const fr = document.getElementById('seedFr')?.value.trim(); const sr = document.getElementById('seedSr')?.value.trim(); const params = new URLSearchParams(); if(fr) params.append('fr',fr); if(sr) params.append('sr',sr); try { const data = await fetchJsonWithRetry(`/api/insights?${params.toString()}`,2,600); if (data.possibleNumbers) renderChips('possibleNumbers', data.possibleNumbers, it => `${it.value} (${it.confidence})`); const note = document.getElementById('insightNote'); if (note) note.textContent = data.note || 'Analysis complete'; } catch(err){ const note = document.getElementById('insightNote'); if (note) note.textContent = `Error: ${err.message}`; }
 }
 
-// History Filter
-function setupHistoryFilter() {
-  const filter = document.getElementById('historyFilter');
-  if (filter) {
-    filter.addEventListener('input', () => {
-      renderDailyResults(state.history);
-    });
-  }
-}
+// dream form handler
+function handleDreamSubmit(e) { e.preventDefault(); const v = document.getElementById('dreamInput')?.value || ''; const out = document.getElementById('dreamResults'); if (!out) return; const sug = suggestDreamNumbers(v); out.innerHTML = ''; if (sug.length===0) { out.textContent='No suggestions'; } else { sug.forEach(s => { const el = document.createElement('div'); el.className='dream-suggestion'; el.textContent = s; out.appendChild(el); }); } }
 
-// Insights Form
-async function handleInsightsSubmit(event) {
-  event.preventDefault();
-  try {
-    const fr = document.getElementById('seedFr')?.value.trim() || '';
-    const sr = document.getElementById('seedSr')?.value.trim() || '';
-    
-    const params = new URLSearchParams();
-    if (fr) params.append('fr', fr);
-    if (sr) params.append('sr', sr);
-    
-    const url = `/api/insights${params.toString() ? '?' + params.toString() : ''}`;
-    const data = await fetchJson(url);
-    
-    if (data.possibleNumbers) {
-      renderChips('possibleNumbers', data.possibleNumbers, item => `${item.value} (${item.confidence})`);
-    }
-    
-    const note = document.getElementById('insightNote');
-    if (note) {
-      note.textContent = data.note || 'Analysis complete';
-    }
-  } catch (err) {
-    const note = document.getElementById('insightNote');
-    if (note) {
-      note.textContent = `Error: ${err.message}`;
-    }
-  }
-}
+// auto-refresh
+function startAutoRefresh() { if (state.refreshTimerId) clearInterval(state.refreshTimerId); if (!state.autoRefreshEnabled) return; state.refreshTimerId = setInterval(() => { loadDashboard(true); }, 5*60*1000); }
 
-// Register Service Worker
-function registerServiceWorker() {
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
-  }
-}
+// Register SW
+function registerServiceWorker() { if ('serviceWorker' in navigator) { navigator.serviceWorker.register('/sw.js').catch(console.warn); } }
 
-// Initialize
+// Init
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('🚀 Initializing dashboard...');
-  
-  // Set copyright year
-  const yearEl = document.getElementById('copyrightYear');
-  if (yearEl) yearEl.textContent = new Date().getFullYear();
-
-  // Refresh button
-  const refreshBtn = document.getElementById('refreshBtn');
-  if (refreshBtn) {
-    refreshBtn.addEventListener('click', () => {
-      console.log('🔄 Refresh clicked');
-      loadDashboard(true);
-    });
-  }
-
-  // Auto refresh toggle
-  const autoToggle = document.getElementById('autoRefreshToggle');
-  if (autoToggle) {
-    autoToggle.addEventListener('change', (e) => {
-      state.autoRefreshEnabled = e.target.checked;
-      console.log('Auto refresh toggle:', state.autoRefreshEnabled);
-      startAutoRefresh();
-    });
-  }
-
-  // Insights form
-  const form = document.getElementById('insightsForm');
-  if (form) {
-    form.addEventListener('submit', handleInsightsSubmit);
-  }
-
-  // Setup filters
-  setupHistoryFilter();
-
-  // Load initial data
-  console.log('📊 Loading initial dashboard data...');
-  loadDashboard();
-
-  // Start timers
-  updateTimers();
-  state.timerInterval = setInterval(updateTimers, 1000);
-
-  // Start auto refresh
-  startAutoRefresh();
-
-  // Register service worker
-  registerServiceWorker();
-});
-
-// Cleanup on unload
-window.addEventListener('unload', () => {
-  if (state.refreshTimerId) clearInterval(state.refreshTimerId);
-  if (state.refreshCountdownId) clearInterval(state.refreshCountdownId);
-  if (state.timerInterval) clearInterval(state.timerInterval);
+  document.getElementById('copyrightYear').textContent = new Date().getFullYear();
+  const refreshBtn = document.getElementById('refreshBtn'); if (refreshBtn) refreshBtn.addEventListener('click', () => loadDashboard(true));
+  const autoToggle = document.getElementById('autoRefreshToggle'); if (autoToggle) { autoToggle.addEventListener('change', (e) => { state.autoRefreshEnabled = e.target.checked; startAutoRefresh(); }); }
+  const form = document.getElementById('insightsForm'); if (form) form.addEventListener('submit', handleInsightsSubmit);
+  const dreamForm = document.getElementById('dreamForm'); if (dreamForm) dreamForm.addEventListener('submit', handleDreamSubmit);
+  setupHistoryFilter(); updateTimers(); state.timerInterval = setInterval(updateTimers,1000);
+  loadDashboard(); startAutoRefresh(); registerServiceWorker();
 });

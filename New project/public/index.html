@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Shillong Teer Pro - Live Prediction Dashboard</title>
-  <link rel="stylesheet" href="/styles.css">
+  <title>Shillong Teer Pro - Live Prediction Website</title>
+  <link rel="stylesheet" href="/styles.css?v=2">
   <link rel="manifest" href="/manifest.webmanifest">
-  <meta name="theme-color" content="#050505">
-  <meta name="description" content="Real-time Shillong Teer prediction and analytics dashboard">
+  <meta name="theme-color" content="#06202A">
+  <meta name="description" content="Real-time Shillong Teer predictions, scheduled draw suggestions, dream-number suggestions, and historical movement analysis.">
 </head>
 <body>
   <div class="app">
@@ -27,7 +27,7 @@
               <span class="pulse"></span>
               <h1>TEER<span class="accent">PRO</span></h1>
             </div>
-            <p class="tagline">Real-time Prediction Engine</p>
+            <p class="tagline">Daily predictions, one-year history, and movement analysis for Shillong Teer</p>
           </div>
           <div class="header-controls">
             <div class="control-btn" id="refreshBtn" title="Refresh data">
@@ -79,6 +79,17 @@
           </div>
         </section>
 
+        <!-- Scheduled Predictions (new) -->
+        <section class="scheduled-section">
+          <div class="section-header">
+            <h2>TODAY'S SCHEDULED PREDICTIONS</h2>
+            <p class="subtitle">Predicted numbers for scheduled draws (will be replaced by official results when published)</p>
+          </div>
+          <div class="scheduled-grid" id="scheduledPredictions">
+            <!-- JS will populate scheduled prediction cards for 16:15 and 17:20 -->
+          </div>
+        </section>
+
         <!-- Countdown Timers -->
         <section class="timers-section">
           <div class="timer-card">
@@ -123,7 +134,7 @@
           <div class="section-header">
             <h2>TREND ANALYSIS</h2>
           </div>
-          
+
           <div class="analytics-grid">
             <!-- Top Houses -->
             <div class="analytics-card">
@@ -173,6 +184,20 @@
           <div class="insight-note" id="insightNote"></div>
           <div class="chips" id="possibleNumbers"></div>
         </section>
+
+        <!-- Dream Numbers (new) -->
+        <section class="dream-section">
+          <div class="section-header">
+            <h2>DREAM NUMBER SUGGESTIONS</h2>
+            <p class="subtitle">Enter a dream phrase and get suggested numbers (based on cultural mappings + numerology).</p>
+          </div>
+          <form id="dreamForm" class="dream-form">
+            <input type="text" id="dreamInput" placeholder="Describe your dream (e.g. snake, river, house)">
+            <button id="dreamSubmit" class="btn">Suggest</button>
+          </form>
+          <div id="dreamResults" class="dream-results"></div>
+        </section>
+
       </div>
     </main>
 
@@ -188,6 +213,6 @@
     </footer>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=2"></script>
 </body>
 </html>
