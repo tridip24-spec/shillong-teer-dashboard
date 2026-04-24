@@ -171,47 +171,65 @@ function renderAnalytics(analytics) {
   renderChips('strongDirectNumbers', analytics.strongestDirect, item => `${item.value} (${item.count}x)`);
 }
 
-// Render Dashboard
+// Render Dashboard - MAIN FUNCTION
 function renderDashboard(payload) {
   if (!payload) return;
 
-  console.log('Rendering dashboard with payload:', payload);
+  console.log('=== RENDERING DASHBOARD ===');
+  console.log('Full payload:', payload);
 
   // Live Results - REAL TIME DATA
   const liveData = payload.live || {};
   
-  console.log('Live data:', liveData);
+  console.log('Live data object:', liveData);
+  console.log('FR:', liveData.firstRound, 'SR:', liveData.secondRound);
   
-  document.getElementById('liveDate').textContent = liveData.date || '--';
-  document.getElementById('firstRound').textContent = liveData.firstRound || '--';
-  document.getElementById('secondRound').textContent = liveData.secondRound || '--';
+  // Update live results display
+  const dateEl = document.getElementById('liveDate');
+  const frEl = document.getElementById('firstRound');
+  const srEl = document.getElementById('secondRound');
+  const lastUpdatedEl = document.getElementById('lastUpdated');
+  
+  if (dateEl) dateEl.textContent = liveData.date || '--';
+  if (frEl) frEl.textContent = liveData.firstRound || '--';
+  if (srEl) srEl.textContent = liveData.secondRound || '--';
 
   // Extract and display house/ending
   const frDigits = extractDigits(liveData.firstRound);
   const srDigits = extractDigits(liveData.secondRound);
-  document.getElementById('frHouse').textContent = frDigits.house;
-  document.getElementById('frEnding').textContent = frDigits.ending;
-  document.getElementById('srHouse').textContent = srDigits.house;
-  document.getElementById('srEnding').textContent = srDigits.ending;
+  
+  console.log('FR digits:', frDigits, 'SR digits:', srDigits);
+  
+  const frHouseEl = document.getElementById('frHouse');
+  const frEndingEl = document.getElementById('frEnding');
+  const srHouseEl = document.getElementById('srHouse');
+  const srEndingEl = document.getElementById('srEnding');
+  
+  if (frHouseEl) frHouseEl.textContent = frDigits.house;
+  if (frEndingEl) frEndingEl.textContent = frDigits.ending;
+  if (srHouseEl) srHouseEl.textContent = srDigits.house;
+  if (srEndingEl) srEndingEl.textContent = srDigits.ending;
 
   // Update time
-  const lastUpdated = document.getElementById('lastUpdated');
-  if (lastUpdated) {
+  if (lastUpdatedEl) {
     const time = new Date(payload.meta?.fetchedAt || new Date());
-    lastUpdated.textContent = `Updated ${time.toLocaleTimeString()}`;
+    lastUpdatedEl.textContent = `Updated ${time.toLocaleTimeString()}`;
   }
 
   // Common Numbers
   renderChips('publishedCommonNumbers', liveData.commonNumbers, item => item);
 
-  // Daily Results - Fixed!
+  // Daily Results
   state.history = payload.history || [];
+  console.log('History rows:', state.history.length);
   renderDailyResults(state.history);
 
   // Predictions
+  console.log('Predictions:', payload.predictions);
   renderPredictions(payload.predictions);
 
   // Analytics
+  console.log('Analytics:', payload.analytics);
   renderAnalytics(payload.analytics);
 
   // Possible Numbers
@@ -219,6 +237,8 @@ function renderDashboard(payload) {
 
   state.data = payload;
   updateStatus('Connected', 'connected');
+  
+  console.log('=== RENDER COMPLETE ===');
 }
 
 // Timer Update
@@ -252,13 +272,13 @@ async function loadDashboard(refresh = false) {
   try {
     updateStatus('Fetching data...', 'loading');
     const url = refresh ? '/api/dashboard?days=365&refresh=1' : '/api/dashboard?days=365';
-    console.log('Fetching from:', url);
+    console.log('📡 Fetching from:', url);
     const payload = await fetchJson(url);
-    console.log('Received payload:', payload);
+    console.log('📥 Received payload:', payload);
     renderDashboard(payload);
     updateStatus('Connected', 'connected');
   } catch (err) {
-    console.error('Load dashboard error:', err);
+    console.error('❌ Load dashboard error:', err);
     updateStatus('Error loading data', 'error');
   }
 }
@@ -266,13 +286,12 @@ async function loadDashboard(refresh = false) {
 // Auto Refresh
 function startAutoRefresh() {
   if (state.refreshTimerId) clearInterval(state.refreshTimerId);
-  if (state.refreshCountdownId) clearInterval(state.refreshCountdownId);
 
   if (!state.autoRefreshEnabled) return;
 
   // Refresh every 60 seconds
   state.refreshTimerId = setInterval(() => {
-    console.log('Auto-refreshing...');
+    console.log('🔄 Auto-refreshing...');
     loadDashboard(true);
   }, 60000);
 }
@@ -326,16 +345,17 @@ function registerServiceWorker() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-  console.log('Initializing dashboard...');
+  console.log('🚀 Initializing dashboard...');
   
   // Set copyright year
-  document.getElementById('copyrightYear').textContent = new Date().getFullYear();
+  const yearEl = document.getElementById('copyrightYear');
+  if (yearEl) yearEl.textContent = new Date().getFullYear();
 
   // Refresh button
   const refreshBtn = document.getElementById('refreshBtn');
   if (refreshBtn) {
     refreshBtn.addEventListener('click', () => {
-      console.log('Refresh clicked');
+      console.log('🔄 Refresh clicked');
       loadDashboard(true);
     });
   }
@@ -345,7 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (autoToggle) {
     autoToggle.addEventListener('change', (e) => {
       state.autoRefreshEnabled = e.target.checked;
-      console.log('Auto refresh:', state.autoRefreshEnabled);
+      console.log('Auto refresh toggle:', state.autoRefreshEnabled);
       startAutoRefresh();
     });
   }
@@ -360,7 +380,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupHistoryFilter();
 
   // Load initial data
-  console.log('Loading initial dashboard data...');
+  console.log('📊 Loading initial dashboard data...');
   loadDashboard();
 
   // Start timers
