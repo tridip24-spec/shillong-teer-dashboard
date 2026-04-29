@@ -12,7 +12,6 @@ const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
 const LIVE_URL = "https://shillongteer.com/";
 const HISTORY_URL = "https://shillongteer.com/previous-results/";
 const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
-
 const LIVE_CACHE_TTL_MS = 60 * 1000;
 const HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
 const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
@@ -33,49 +32,6 @@ const MIME_TYPES = {
   ".xml": "application/xml; charset=utf-8",
 };
 
-const DREAM_NUMBER_MAP = [
-  { symbol: "Snake", number: "07", category: "Animal" },
-  { symbol: "Water", number: "18", category: "Nature" },
-  { symbol: "Fish", number: "28", category: "Animal" },
-  { symbol: "Temple", number: "09", category: "Spiritual" },
-  { symbol: "River", number: "35", category: "Nature" },
-  { symbol: "Baby", number: "14", category: "People" },
-  { symbol: "Marriage", number: "24", category: "Life event" },
-  { symbol: "Death", number: "00", category: "Symbolic" },
-  { symbol: "Gold", number: "48", category: "Object" },
-  { symbol: "Fire", number: "13", category: "Nature" },
-  { symbol: "House", number: "25", category: "Place" },
-  { symbol: "Elephant", number: "72", category: "Animal" },
-  { symbol: "Tiger", number: "57", category: "Animal" },
-  { symbol: "Dog", number: "21", category: "Animal" },
-  { symbol: "Cat", number: "16", category: "Animal" },
-  { symbol: "Rain", number: "62", category: "Nature" },
-  { symbol: "Blood", number: "89", category: "Symbolic" },
-  { symbol: "Flying", number: "51", category: "Motion" },
-  { symbol: "Falling", number: "40", category: "Motion" },
-  { symbol: "Mother", number: "31", category: "People" },
-  { symbol: "Father", number: "32", category: "People" },
-  { symbol: "Child", number: "11", category: "People" },
-  { symbol: "Money", number: "83", category: "Object" },
-  { symbol: "Jewellery", number: "95", category: "Object" },
-  { symbol: "Cow", number: "46", category: "Animal" },
-  { symbol: "Bird", number: "63", category: "Animal" },
-  { symbol: "Moon", number: "52", category: "Nature" },
-  { symbol: "Sun", number: "19", category: "Nature" },
-  { symbol: "Tree", number: "64", category: "Nature" },
-  { symbol: "Climbing", number: "38", category: "Motion" },
-  { symbol: "Boat", number: "44", category: "Travel" },
-  { symbol: "Road", number: "23", category: "Travel" },
-  { symbol: "School", number: "17", category: "Place" },
-  { symbol: "Market", number: "54", category: "Place" },
-  { symbol: "Doctor", number: "68", category: "People" },
-  { symbol: "Police", number: "76", category: "People" },
-  { symbol: "Wedding dress", number: "84", category: "Object" },
-  { symbol: "Fruit", number: "27", category: "Food" },
-  { symbol: "Flower", number: "41", category: "Nature" },
-  { symbol: "Storm", number: "93", category: "Nature" },
-];
-
 let refreshInProgress = false;
 let lastRefreshError = null;
 let lastSuccessfulRefresh = null;
@@ -93,14 +49,14 @@ function padNumber(value) {
 }
 
 function parseDdMmYyyy(value) {
-  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec((value || "").trim());
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value.trim());
   if (!match) return null;
   const [, dd, mm, yyyy] = match;
   return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
 }
 
 function parseDdMmYyyyDot(value) {
-  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec((value || "").trim());
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value.trim());
   if (!match) return null;
   const [, dd, mm, yyyy] = match;
   return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
@@ -119,14 +75,14 @@ function formatIsoDateFromAny(dateString) {
 }
 
 function formatDisplayDateFromIso(isoDate) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || "");
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
   if (!match) return isoDate;
   const [, yyyy, mm, dd] = match;
   return `${dd}-${mm}-${yyyy}`;
 }
 
 function cleanText(value) {
-  return (value || "")
+  return value
     .replace(/<[^>]+>/g, " ")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
@@ -137,29 +93,23 @@ function cleanText(value) {
 function safeNumberToken(value) {
   if (!value) return null;
   const token = value.trim().toUpperCase();
-  if (/^\d{1,2}$/.test(token)) return padNumber(token);
-  if (token === "-") return "XX";
-  if (token === "OFF" || token === "XX") return token;
+  if (/^\d{1,2}$/.test(token)) {
+    return padNumber(token);
+  }
+  if (token === "-") {
+    return "XX";
+  }
+  if (token === "OFF" || token === "XX") {
+    return token;
+  }
   return null;
 }
 
-function isResolvedNumberToken(value) {
-  return /^\d{2}$/.test(value || "");
+async function delay(ms) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function resolvedRoundCount(row) {
-  return [row?.firstRound, row?.secondRound].filter(isResolvedNumberToken).length;
-}
-
-function hasResolvedRound(row) {
-  return resolvedRoundCount(row) > 0;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchText(url, attempt = 1) {
+async function fetchTextWithRetry(url, attempt = 1) {
   try {
     const response = await fetch(url, {
       headers: {
@@ -178,10 +128,14 @@ async function fetchText(url, attempt = 1) {
   } catch (error) {
     if (attempt < FETCH_RETRY_ATTEMPTS) {
       await delay(FETCH_RETRY_DELAY_MS * attempt);
-      return fetchText(url, attempt + 1);
+      return fetchTextWithRetry(url, attempt + 1);
     }
     throw error;
   }
+}
+
+async function fetchText(url) {
+  return fetchTextWithRetry(url);
 }
 
 function parseHistoryPage(html) {
@@ -193,6 +147,7 @@ function parseHistoryPage(html) {
     const date = match[1];
     const firstRound = safeNumberToken(match[2]);
     const secondRound = safeNumberToken(match[3]);
+
     if (!firstRound || !secondRound) continue;
 
     rows.push({
@@ -217,6 +172,7 @@ function parseSupplementalHistoryPage(html) {
     const isoDate = formatIsoDateFromAny(sourceDate);
     const firstRound = safeNumberToken(match[2]);
     const secondRound = safeNumberToken(match[3]);
+
     if (!isoDate || !firstRound || !secondRound) continue;
 
     rows.push({
@@ -231,41 +187,60 @@ function parseSupplementalHistoryPage(html) {
   return rows;
 }
 
-function extractLiveNumbersFallback(html) {
-  const rnNumbers = [...html.matchAll(/class="rn">([A-Z0-9-]{1,3})</gi)]
-    .map((match) => safeNumberToken(match[1]))
-    .filter(Boolean);
+function extractLiveDate(html) {
+  const strongDateMatch = html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i);
+  if (strongDateMatch) {
+    return cleanText(strongDateMatch[1]);
+  }
 
-  if (rnNumbers.length >= 2) {
+  const textDateMatch = cleanText(html).match(/\bDate:\s*(\d{2}-\d{2}-\d{4})\b/i);
+  return textDateMatch ? textDateMatch[1] : null;
+}
+
+function extractLiveRoundsFallback(html) {
+  const normalized = cleanText(html);
+  const firstLabelMatch = normalized.match(/First\s*Round(?:\s*Result)?\s*(XX|OFF|\d{2})/i);
+  const secondLabelMatch = normalized.match(/Second\s*Round(?:\s*Result)?\s*(XX|OFF|\d{2})/i);
+
+  if (firstLabelMatch || secondLabelMatch) {
     return {
-      firstRound: rnNumbers[0],
-      secondRound: rnNumbers[1],
+      firstRound: safeNumberToken(firstLabelMatch?.[1] || null),
+      secondRound: safeNumberToken(secondLabelMatch?.[1] || null),
     };
   }
 
-  const textNumbers = [...html.matchAll(/\b(\d{2}|XX|OFF)\b/g)]
+  const classMatches = [...html.matchAll(/class="rn">([A-Z0-9-]{1,3})</gi)]
     .map((match) => safeNumberToken(match[1]))
     .filter(Boolean);
 
+  if (classMatches.length >= 2) {
+    return {
+      firstRound: classMatches[0],
+      secondRound: classMatches[1],
+    };
+  }
+
   return {
-    firstRound: textNumbers[0] || null,
-    secondRound: textNumbers[1] || null,
+    firstRound: null,
+    secondRound: null,
   };
 }
 
 function parseLivePage(html) {
-  const dateMatch = html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i);
+  const liveDate = extractLiveDate(html);
   const strictRoundMatch = html.match(
     /<div class="rb"><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><\/div>/i
   );
-  const fallbackRounds = extractLiveNumbersFallback(html);
+  const fallbackRounds = extractLiveRoundsFallback(html);
 
-  const commonNumbers = [...html.matchAll(/<div class="nc">(\d{2})<\/div>/g)].map((match) => match[1]);
+  const commonNumbers = [];
+  for (const match of html.matchAll(/<div class="nc">(\d{2})<\/div>/g)) {
+    commonNumbers.push(match[1]);
+  }
 
   const recentRows = [];
   const recentPattern =
     /<tr><td>(\d{2}-\d{2}-\d{4})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><\/tr>/g;
-
   for (const match of html.matchAll(recentPattern)) {
     recentRows.push({
       date: match[1],
@@ -274,8 +249,6 @@ function parseLivePage(html) {
       secondRound: safeNumberToken(match[3]),
     });
   }
-
-  const liveDate = dateMatch ? cleanText(dateMatch[1]) : null;
 
   return {
     date: liveDate,
@@ -328,18 +301,14 @@ async function loadHistory(forceRefresh = false) {
       fetchText(HISTORY_URL),
       fetchText(SUPPLEMENTAL_HISTORY_URL),
     ]);
-
-    const rows = mergeHistoryRows(
-      parseHistoryPage(archiveHtml),
-      parseSupplementalHistoryPage(supplementalHtml)
-    );
-
+    const archiveRows = parseHistoryPage(archiveHtml);
+    const supplementalRows = parseSupplementalHistoryPage(supplementalHtml);
+    const rows = mergeHistoryRows(archiveRows, supplementalRows);
     const payload = {
       fetchedAt: new Date().toISOString(),
       sourceUrl: `${HISTORY_URL} + ${SUPPLEMENTAL_HISTORY_URL}`,
       rows,
     };
-
     writeJson(HISTORY_CACHE_PATH, payload);
     return { ...payload, fromCache: false };
   } catch (error) {
@@ -357,12 +326,13 @@ async function loadLive(forceRefresh = false) {
   }
 
   try {
+    const html = await fetchText(LIVE_URL);
+    const result = parseLivePage(html);
     const payload = {
       fetchedAt: new Date().toISOString(),
       sourceUrl: LIVE_URL,
-      ...parseLivePage(await fetchText(LIVE_URL)),
+      ...result,
     };
-
     writeJson(LIVE_CACHE_PATH, payload);
     return { ...payload, fromCache: false };
   } catch (error) {
@@ -383,8 +353,35 @@ function getLastNDaysHistory(rows, days = 365) {
   });
 }
 
+function isResolvedNumberToken(value) {
+  return /^\d{2}$/.test(value || "");
+}
+
+function resolvedRoundCount(row) {
+  return [row?.firstRound, row?.secondRound].filter(isResolvedNumberToken).length;
+}
+
+function hasResolvedRound(row) {
+  return resolvedRoundCount(row) > 0;
+}
+
+function selectPredictionSeed(historyRows) {
+  return historyRows.find((row) => hasResolvedRound(row)) || null;
+}
+
+function buildLiveSeed(livePayload) {
+  if (!livePayload?.date) return null;
+  if (!hasResolvedRound(livePayload)) return null;
+
+  return {
+    date: livePayload.date,
+    firstRound: livePayload.firstRound || "XX",
+    secondRound: livePayload.secondRound || "XX",
+  };
+}
+
 function getDigits(numberToken) {
-  if (!/^\d{2}$/.test(numberToken || "")) return null;
+  if (!/^\d{2}$/.test(numberToken)) return null;
   return {
     direct: numberToken,
     house: Number(numberToken[0]),
@@ -407,7 +404,7 @@ function rankMap(map, formatter) {
 }
 
 function sumDigitToken(token) {
-  if (!/^\d{2}$/.test(token || "")) return null;
+  if (!/^\d{2}$/.test(token)) return null;
   return Number(token[0]) + Number(token[1]);
 }
 
@@ -468,11 +465,15 @@ function calculateShiftRanking(currentRows, previousRows, tokenSelector) {
   const previousMap = new Map();
 
   for (const row of currentRows) {
-    for (const token of tokenSelector(row)) addWeighted(currentMap, token, 1);
+    for (const token of tokenSelector(row)) {
+      addWeighted(currentMap, token, 1);
+    }
   }
 
   for (const row of previousRows) {
-    for (const token of tokenSelector(row)) addWeighted(previousMap, token, 1);
+    for (const token of tokenSelector(row)) {
+      addWeighted(previousMap, token, 1);
+    }
   }
 
   const allKeys = new Set([...currentMap.keys(), ...previousMap.keys()]);
@@ -487,20 +488,10 @@ function calculateShiftRanking(currentRows, previousRows, tokenSelector) {
     .sort((a, b) => b.shift - a.shift || b.current - a.current || String(a.value).localeCompare(String(b.value)));
 }
 
-function buildLiveSeed(livePayload) {
-  if (!livePayload?.date) return null;
-  return {
-    date: livePayload.date,
-    firstRound: livePayload.firstRound || "XX",
-    secondRound: livePayload.secondRound || "XX",
-  };
-}
-
 function calculatePrediction(historyRows, customSeed, livePayload) {
   const usable = historyRows.filter(
     (row) => /^\d{2}$/.test(row.firstRound) && /^\d{2}$/.test(row.secondRound)
   );
-
   const recent7 = buildWindow(usable, 0, 7);
   const previous7 = buildWindow(usable, 7, 7);
   const recent15 = buildWindow(usable, 0, 15);
@@ -534,8 +525,8 @@ function calculatePrediction(historyRows, customSeed, livePayload) {
   }
 
   const liveSeed = buildLiveSeed(livePayload);
-  const latest = customSeed || liveSeed || historyRows.find((row) => hasResolvedRound(row)) || usable[0];
-  const latestKey = latest ? getTransitionKey(latest) : null;
+  const latest = customSeed || liveSeed || selectPredictionSeed(historyRows) || usable[0];
+  const latestKey = getTransitionKey(latest);
 
   if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && directNext.has(latestKey)) {
     for (const [value, score] of directNext.get(latestKey).entries()) {
@@ -558,33 +549,38 @@ function calculatePrediction(historyRows, customSeed, livePayload) {
 
   const latestFirst = getDigits(latest?.firstRound || "");
   const latestSecond = getDigits(latest?.secondRound || "");
+  const seedEnding =
+    latestFirst && latestSecond
+      ? (latestFirst.house +
+          latestFirst.ending +
+          latestSecond.house +
+          latestSecond.ending) %
+        10
+      : null;
 
-  if (latestFirst) {
-    addWeighted(houseScores, latestFirst.house, 8);
-    addWeighted(endingScores, latestFirst.ending, 5);
-    addWeighted(directScores, latestFirst.direct, 4);
-  }
-
-  if (latestSecond) {
-    addWeighted(houseScores, latestSecond.house, 8);
-    addWeighted(endingScores, latestSecond.ending, 5);
-    addWeighted(directScores, latestSecond.direct, 4);
-  }
-
-  if (latestFirst && latestSecond) {
-    const seedEnding =
-      (latestFirst.house + latestFirst.ending + latestSecond.house + latestSecond.ending) % 10;
+  if (seedEnding !== null) {
     [seedEnding, (seedEnding + 1) % 10, (seedEnding + 9) % 10].forEach((ending) =>
       addWeighted(endingScores, ending, 6)
     );
   }
 
+  if (latestFirst) {
+    addWeighted(houseScores, latestFirst.house, 5);
+    addWeighted(endingScores, latestFirst.ending, 3);
+    addWeighted(directScores, latestFirst.direct, 4);
+  }
+
+  if (latestSecond) {
+    addWeighted(houseScores, latestSecond.house, 5);
+    addWeighted(endingScores, latestSecond.ending, 3);
+    addWeighted(directScores, latestSecond.direct, 4);
+  }
+
   for (const commonNumber of livePayload?.commonNumbers || []) {
-    if (/^\d{2}$/.test(commonNumber)) {
-      addWeighted(directScores, commonNumber, 3);
-      addWeighted(houseScores, Number(commonNumber[0]), 2);
-      addWeighted(endingScores, Number(commonNumber[1]), 2);
-    }
+    if (!/^\d{2}$/.test(commonNumber)) continue;
+    addWeighted(directScores, commonNumber, 3);
+    addWeighted(houseScores, Number(commonNumber[0]), 2);
+    addWeighted(endingScores, Number(commonNumber[1]), 2);
   }
 
   const topHouses = rankMap(houseScores, (value, score) => ({
@@ -619,7 +615,9 @@ function calculatePrediction(historyRows, customSeed, livePayload) {
   function addCandidate(value, score, reason) {
     const current = candidateMap.get(value) || { value, score: 0, reasons: [] };
     current.score += score;
-    if (!current.reasons.includes(reason)) current.reasons.push(reason);
+    if (!current.reasons.includes(reason)) {
+      current.reasons.push(reason);
+    }
     candidateMap.set(value, current);
   }
 
@@ -634,7 +632,9 @@ function calculatePrediction(historyRows, customSeed, livePayload) {
   }
 
   for (const [pairValue, score] of pairScores.entries()) {
-    addCandidate(`${pairValue[0]}${pairValue[1]}`, score * 1.15, "Shift pair pattern");
+    const first = pairValue[0];
+    const second = pairValue[1];
+    addCandidate(`${first}${second}`, score * 1.15, "Shift pair pattern");
   }
 
   for (const [value, score] of transitionScores.entries()) {
@@ -708,7 +708,9 @@ function calculateAnalytics(historyRows) {
       houseFrequency[digits.house].count += 1;
       endingFrequency[digits.ending].count += 1;
       addWeighted(repeatedDirect, digits.direct, 1);
-      if (index < 21) addWeighted(recentDirect, digits.direct, 1);
+      if (index < 21) {
+        addWeighted(recentDirect, digits.direct, 1);
+      }
       monthEntry.total += 1;
       monthEntry.houses[digits.house] += 1;
       monthEntry.endings[digits.ending] += 1;
@@ -717,36 +719,52 @@ function calculateAnalytics(historyRows) {
     monthlyTrend.set(monthKey, monthEntry);
   }
 
+  const strongestDirect = rankMap(repeatedDirect, (value, score) => ({
+    value,
+    count: score,
+  })).slice(0, 12);
+
+  const recentShiftNumbers = rankMap(recentDirect, (value, score) => ({
+    value,
+    count: score,
+  })).slice(0, 10);
+
+  const currentRows = buildWindow(usable, 0, 14);
+  const previousRows = buildWindow(usable, 14, 14);
+  const risingHouses = calculateShiftRanking(
+    currentRows,
+    previousRows,
+    (row) => [row.firstRound[0], row.secondRound[0]]
+  ).slice(0, 5);
+  const risingEndings = calculateShiftRanking(
+    currentRows,
+    previousRows,
+    (row) => [row.firstRound[1], row.secondRound[1]]
+  ).slice(0, 5);
+
+  const months = [...monthlyTrend.values()]
+    .sort((a, b) => a.month.localeCompare(b.month))
+    .slice(-12)
+    .map((entry) => {
+      const housePeak = Math.max(...entry.houses);
+      const endingPeak = Math.max(...entry.endings);
+
+      return {
+        month: entry.month,
+        busiestHouse: entry.houses.indexOf(housePeak),
+        busiestEnding: entry.endings.indexOf(endingPeak),
+        total: entry.total,
+      };
+    });
+
   return {
     houseFrequency,
     endingFrequency,
-    strongestDirect: rankMap(repeatedDirect, (value, score) => ({
-      value,
-      count: score,
-    })).slice(0, 12),
-    recentShiftNumbers: rankMap(recentDirect, (value, score) => ({
-      value,
-      count: score,
-    })).slice(0, 10),
-    risingHouses: calculateShiftRanking(
-      buildWindow(usable, 0, 14),
-      buildWindow(usable, 14, 14),
-      (row) => [row.firstRound[0], row.secondRound[0]]
-    ).slice(0, 5),
-    risingEndings: calculateShiftRanking(
-      buildWindow(usable, 0, 14),
-      buildWindow(usable, 14, 14),
-      (row) => [row.firstRound[1], row.secondRound[1]]
-    ).slice(0, 5),
-    months: [...monthlyTrend.values()]
-      .sort((a, b) => a.month.localeCompare(b.month))
-      .slice(-12)
-      .map((entry) => ({
-        month: entry.month,
-        busiestHouse: entry.houses.indexOf(Math.max(...entry.houses)),
-        busiestEnding: entry.endings.indexOf(Math.max(...entry.endings)),
-        total: entry.total,
-      })),
+    strongestDirect,
+    recentShiftNumbers,
+    risingHouses,
+    risingEndings,
+    months,
   };
 }
 
@@ -755,7 +773,6 @@ function shouldPreferHistoryRow(livePayload, historyRow) {
   if (!livePayload?.isoDate) return hasResolvedRound(historyRow);
 
   const dateComparison = historyRow.isoDate.localeCompare(livePayload.isoDate);
-
   if (dateComparison > 0) return hasResolvedRound(historyRow);
 
   if (dateComparison === 0) {
@@ -868,12 +885,10 @@ const server = http.createServer(async (request, response) => {
     if (requestUrl.pathname === "/api/dashboard") {
       const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
       const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
-
       const [historyPayload, livePayload] = await Promise.all([
         loadHistory(forceRefresh),
         loadLive(forceRefresh),
       ]);
-
       const history = getLastNDaysHistory(historyPayload.rows, days);
       const predictions = calculatePrediction(history, null, livePayload);
       const analytics = calculateAnalytics(history);
@@ -884,7 +899,6 @@ const server = http.createServer(async (request, response) => {
         history,
         predictions,
         analytics,
-        dreamNumbers: DREAM_NUMBER_MAP,
         meta: {
           historySource: historyPayload.sourceUrl,
           liveSource: livePayload.sourceUrl,
@@ -908,26 +922,28 @@ const server = http.createServer(async (request, response) => {
       const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
       const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
       const historyPayload = await loadHistory(forceRefresh);
-      jsonResponse(response, 200, getLastNDaysHistory(historyPayload.rows, days));
+      const history = getLastNDaysHistory(historyPayload.rows, days);
+      jsonResponse(response, 200, history);
       return;
     }
 
     if (requestUrl.pathname === "/api/live") {
       const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
-      jsonResponse(response, 200, await loadLive(forceRefresh));
+      const livePayload = await loadLive(forceRefresh);
+      jsonResponse(response, 200, livePayload);
       return;
     }
 
     if (requestUrl.pathname === "/api/predict" || requestUrl.pathname === "/api/insights") {
       const historyPayload = await loadHistory();
       const history = getLastNDaysHistory(historyPayload.rows, 365);
-      const livePayload = await loadLive();
       const fr = safeNumberToken(requestUrl.searchParams.get("fr"));
       const sr = safeNumberToken(requestUrl.searchParams.get("sr"));
       const customSeed =
         /^\d{2}$/.test(fr || "") && /^\d{2}$/.test(sr || "")
           ? { date: "Manual entry", firstRound: fr, secondRound: sr }
           : null;
+      const livePayload = await loadLive();
 
       jsonResponse(response, 200, calculatePrediction(history, customSeed, livePayload));
       return;
