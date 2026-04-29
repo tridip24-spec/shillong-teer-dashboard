@@ -1,12 +1,54 @@
 const REFRESH_INTERVAL_SECONDS = 30;
 
+const DREAM_NUMBER_MAP = [
+  { symbol: "Snake", number: "07", category: "Animal" },
+  { symbol: "Water", number: "18", category: "Nature" },
+  { symbol: "Fish", number: "28", category: "Animal" },
+  { symbol: "Temple", number: "09", category: "Spiritual" },
+  { symbol: "River", number: "35", category: "Nature" },
+  { symbol: "Baby", number: "14", category: "People" },
+  { symbol: "Marriage", number: "24", category: "Life event" },
+  { symbol: "Death", number: "00", category: "Symbolic" },
+  { symbol: "Gold", number: "48", category: "Object" },
+  { symbol: "Fire", number: "13", category: "Nature" },
+  { symbol: "House", number: "25", category: "Place" },
+  { symbol: "Elephant", number: "72", category: "Animal" },
+  { symbol: "Tiger", number: "57", category: "Animal" },
+  { symbol: "Dog", number: "21", category: "Animal" },
+  { symbol: "Cat", number: "16", category: "Animal" },
+  { symbol: "Rain", number: "62", category: "Nature" },
+  { symbol: "Blood", number: "89", category: "Symbolic" },
+  { symbol: "Flying", number: "51", category: "Motion" },
+  { symbol: "Falling", number: "40", category: "Motion" },
+  { symbol: "Mother", number: "31", category: "People" },
+  { symbol: "Father", number: "32", category: "People" },
+  { symbol: "Child", number: "11", category: "People" },
+  { symbol: "Money", number: "83", category: "Object" },
+  { symbol: "Jewellery", number: "95", category: "Object" },
+  { symbol: "Cow", number: "46", category: "Animal" },
+  { symbol: "Bird", number: "63", category: "Animal" },
+  { symbol: "Moon", number: "52", category: "Nature" },
+  { symbol: "Sun", number: "19", category: "Nature" },
+  { symbol: "Tree", number: "64", category: "Nature" },
+  { symbol: "Climbing", number: "38", category: "Motion" },
+  { symbol: "Boat", number: "44", category: "Travel" },
+  { symbol: "Road", number: "23", category: "Travel" },
+  { symbol: "School", number: "17", category: "Place" },
+  { symbol: "Market", number: "54", category: "Place" },
+  { symbol: "Doctor", number: "68", category: "People" },
+  { symbol: "Police", number: "76", category: "People" },
+  { symbol: "Wedding dress", number: "84", category: "Object" },
+  { symbol: "Fruit", number: "27", category: "Food" },
+  { symbol: "Flower", number: "41", category: "Nature" },
+  { symbol: "Storm", number: "93", category: "Nature" },
+];
+
 const state = {
   history: [],
   autoRefreshEnabled: true,
   refreshCountdown: REFRESH_INTERVAL_SECONDS,
   refreshTimerId: null,
   refreshCountdownId: null,
-  dreamNumbers: [],
 };
 
 async function fetchJson(url) {
@@ -14,7 +56,19 @@ async function fetchJson(url) {
   if (!response.ok) {
     throw new Error(`Request failed: ${response.status}`);
   }
-  return response.json();
+
+  const contentType = response.headers.get("content-type") || "";
+  const bodyText = await response.text();
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Expected JSON but got ${contentType || "unknown content"}: ${bodyText.slice(0, 120)}`);
+  }
+
+  try {
+    return JSON.parse(bodyText);
+  } catch {
+    throw new Error(`Invalid JSON received: ${bodyText.slice(0, 120)}`);
+  }
 }
 
 function createChip({ title, subtitle = "" }) {
@@ -99,7 +153,7 @@ function renderDreamTable() {
   const body = document.getElementById("dreamTableBody");
   body.innerHTML = "";
 
-  const filtered = state.dreamNumbers.filter((entry) => {
+  const filtered = DREAM_NUMBER_MAP.filter((entry) => {
     const haystack = `${entry.symbol} ${entry.number} ${entry.category}`.toLowerCase();
     return haystack.includes(filter);
   });
@@ -120,8 +174,8 @@ function renderDreamTable() {
 function renderDreamSearch() {
   const filter = document.getElementById("dreamSearch").value.trim().toLowerCase();
   const matches = filter
-    ? state.dreamNumbers.filter((entry) => entry.symbol.toLowerCase().includes(filter)).slice(0, 8)
-    : state.dreamNumbers.slice(0, 8);
+    ? DREAM_NUMBER_MAP.filter((entry) => entry.symbol.toLowerCase().includes(filter)).slice(0, 8)
+    : DREAM_NUMBER_MAP.slice(0, 8);
 
   renderChipList("dreamMatches", matches, (entry) => ({
     title: entry.symbol,
@@ -132,6 +186,39 @@ function renderDreamSearch() {
     title: entry.number,
     subtitle: entry.symbol,
   }));
+}
+
+function isResolvedToken(value) {
+  return /^\d{2}$/.test(value || "");
+}
+
+function getDisplayLive(payload) {
+  const latestHistory = payload.history?.[0];
+  const displayLive = { ...payload.live };
+
+  if (!latestHistory) {
+    return displayLive;
+  }
+
+  const liveResolvedCount = [payload.live.firstRound, payload.live.secondRound].filter(isResolvedToken).length;
+  const historyResolvedCount = [latestHistory.firstRound, latestHistory.secondRound].filter(isResolvedToken).length;
+
+  if (
+    latestHistory.isoDate &&
+    (
+      !payload.live.isoDate ||
+      latestHistory.isoDate > payload.live.isoDate ||
+      (latestHistory.isoDate === payload.live.isoDate && historyResolvedCount > liveResolvedCount)
+    )
+  ) {
+    displayLive.date = latestHistory.date;
+    displayLive.isoDate = latestHistory.isoDate;
+    displayLive.firstRound = latestHistory.firstRound;
+    displayLive.secondRound = latestHistory.secondRound;
+    displayLive.resultSource = "latest-history";
+  }
+
+  return displayLive;
 }
 
 function renderInsights(insights) {
@@ -168,37 +255,6 @@ function renderInsights(insights) {
   }));
 }
 
-function isResolvedToken(value) {
-  return /^\d{2}$/.test(value || "");
-}
-
-function getDisplayLive(payload) {
-  const latestHistory = payload.history?.[0];
-  const displayLive = { ...payload.live };
-
-  if (!latestHistory) return displayLive;
-
-  const liveResolvedCount = [payload.live.firstRound, payload.live.secondRound].filter(isResolvedToken).length;
-  const historyResolvedCount = [latestHistory.firstRound, latestHistory.secondRound].filter(isResolvedToken).length;
-
-  if (
-    latestHistory.isoDate &&
-    (
-      !payload.live.isoDate ||
-      latestHistory.isoDate > payload.live.isoDate ||
-      (latestHistory.isoDate === payload.live.isoDate && historyResolvedCount > liveResolvedCount)
-    )
-  ) {
-    displayLive.date = latestHistory.date;
-    displayLive.isoDate = latestHistory.isoDate;
-    displayLive.firstRound = latestHistory.firstRound;
-    displayLive.secondRound = latestHistory.secondRound;
-    displayLive.resultSource = "latest-history";
-  }
-
-  return displayLive;
-}
-
 function renderDashboard(payload) {
   const displayLive = getDisplayLive(payload);
 
@@ -206,7 +262,6 @@ function renderDashboard(payload) {
   document.getElementById("firstRound").textContent = displayLive.firstRound || "--";
   document.getElementById("secondRound").textContent = displayLive.secondRound || "--";
   document.getElementById("lastUpdated").textContent = `Updated ${new Date(payload.meta.fetchedAt).toLocaleString()}`;
-
   document.getElementById("liveSourceLabel").textContent =
     (displayLive.resultSource || payload.meta.liveDisplaySource) === "latest-history"
       ? "Showing latest confirmed result from history feed"
@@ -219,7 +274,11 @@ function renderDashboard(payload) {
       ? "Both rounds available"
       : isResolvedToken(displayLive.firstRound)
         ? "First round available"
-        : "Waiting for official live values";
+        : (displayLive.resultSource || payload.meta.liveDisplaySource) === "latest-history"
+          ? "Confirmed from latest history"
+          : displayLive.firstRound === "XX" && displayLive.secondRound === "XX"
+            ? "Waiting for official live values"
+            : "Live values detected";
 
   document.getElementById("refreshStatus").textContent = payload.meta.autoRefresh?.refreshInProgress
     ? "Background refresh running"
@@ -244,10 +303,7 @@ function renderDashboard(payload) {
   renderMonthlyTrend(payload.analytics.months);
 
   state.history = payload.history;
-  state.dreamNumbers = payload.dreamNumbers || [];
   renderHistoryTable(state.history);
-  renderDreamSearch();
-  renderDreamTable();
 }
 
 function updateCountdownLabel() {
@@ -347,6 +403,8 @@ document.getElementById("autoRefreshToggle").addEventListener("change", (event) 
 
 document.getElementById("copyrightYear").textContent = new Date().getFullYear();
 registerServiceWorker();
+renderDreamSearch();
+renderDreamTable();
 startAutoRefresh();
 
 loadDashboard().catch((error) => {
