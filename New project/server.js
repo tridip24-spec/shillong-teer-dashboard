@@ -1,40 +1,947 @@
-const http=require("http"),fs=require("fs"),path=require("path"),{URL}=require("url");
-const PORT=process.env.PORT||3000,PUBLIC_DIR=path.join(__dirname,"public"),DATA_DIR=path.join(__dirname,"data");
-const HISTORY_CACHE_PATH=path.join(DATA_DIR,"history-cache.json"),LIVE_CACHE_PATH=path.join(DATA_DIR,"live-cache.json");
-const LIVE_URL="https://shillongteer.com/",HISTORY_URL="https://shillongteer.com/previous-results/",SUPPLEMENTAL_HISTORY_URL="https://shillongteerresultlist.co.in/";
-const LIVE_CACHE_TTL_MS=60*1000,HISTORY_CACHE_TTL_MS=10*60*1000,AUTO_REFRESH_INTERVAL_MS=60*1000,FETCH_RETRY_ATTEMPTS=3,FETCH_RETRY_DELAY_MS=1200;
-const MIME_TYPES={".html":"text/html; charset=utf-8",".css":"text/css; charset=utf-8",".js":"application/javascript; charset=utf-8",".json":"application/json; charset=utf-8",".webmanifest":"application/manifest+json; charset=utf-8",".svg":"image/svg+xml",".png":"image/png",".jpg":"image/jpeg",".ico":"image/x-icon",".txt":"text/plain; charset=utf-8",".xml":"application/xml; charset=utf-8"};
-let refreshInProgress=false,lastRefreshError=null,lastSuccessfulRefresh=null;
-const DREAM_NUMBER_MAP=[{symbol:"Snake",number:"07",category:"Animal"},{symbol:"Water",number:"18",category:"Nature"},{symbol:"Fish",number:"28",category:"Animal"},{symbol:"Temple",number:"09",category:"Spiritual"},{symbol:"River",number:"35",category:"Nature"},{symbol:"Baby",number:"14",category:"People"},{symbol:"Marriage",number:"24",category:"Life event"},{symbol:"Death",number:"00",category:"Symbolic"},{symbol:"Gold",number:"48",category:"Object"},{symbol:"Fire",number:"13",category:"Nature"},{symbol:"House",number:"25",category:"Place"},{symbol:"Elephant",number:"72",category:"Animal"},{symbol:"Tiger",number:"57",category:"Animal"},{symbol:"Dog",number:"21",category:"Animal"},{symbol:"Cat",number:"16",category:"Animal"},{symbol:"Rain",number:"62",category:"Nature"},{symbol:"Blood",number:"89",category:"Symbolic"},{symbol:"Flying",number:"51",category:"Motion"},{symbol:"Falling",number:"40",category:"Motion"},{symbol:"Mother",number:"31",category:"People"},{symbol:"Father",number:"32",category:"People"},{symbol:"Child",number:"11",category:"People"},{symbol:"Money",number:"83",category:"Object"},{symbol:"Jewellery",number:"95",category:"Object"},{symbol:"Cow",number:"46",category:"Animal"},{symbol:"Bird",number:"63",category:"Animal"},{symbol:"Moon",number:"52",category:"Nature"},{symbol:"Sun",number:"19",category:"Nature"},{symbol:"Tree",number:"64",category:"Nature"},{symbol:"Climbing",number:"38",category:"Motion"},{symbol:"Boat",number:"44",category:"Travel"},{symbol:"Road",number:"23",category:"Travel"},{symbol:"School",number:"17",category:"Place"},{symbol:"Market",number:"54",category:"Place"},{symbol:"Doctor",number:"68",category:"People"},{symbol:"Police",number:"76",category:"People"},{symbol:"Wedding dress",number:"84",category:"Object"},{symbol:"Fruit",number:"27",category:"Food"},{symbol:"Flower",number:"41",category:"Nature"},{symbol:"Storm",number:"93",category:"Nature"}];
-if(!fs.existsSync(DATA_DIR))fs.mkdirSync(DATA_DIR,{recursive:true});
-const pad=v=>String(v).padStart(2,"0"),readJson=(f,d)=>{try{return JSON.parse(fs.readFileSync(f,"utf8"));}catch{return d;}},writeJson=(f,v)=>fs.writeFileSync(f,JSON.stringify(v,null,2));
-const parseDash=v=>/^(\d{2})-(\d{2})-(\d{4})$/.exec((v||"").trim()),parseDot=v=>/^(\d{2})\.(\d{2})\.(\d{4})$/.exec((v||"").trim());
-const isoFromDash=v=>{const m=parseDash(v);return m?new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString().slice(0,10):null;};
-const isoFromAny=v=>{const d=isoFromDash(v);if(d)return d;const m=parseDot(v);return m?new Date(`${m[3]}-${m[2]}-${m[1]}T00:00:00.000Z`).toISOString().slice(0,10):null;};
-const displayFromIso=v=>/^(\d{4})-(\d{2})-(\d{2})$/.test(v||"")?`${v.slice(8,10)}-${v.slice(5,7)}-${v.slice(0,4)}`:v;
-const clean=v=>(v||"").replace(/<[^>]+>/g," ").replace(/&nbsp;/g," ").replace(/&amp;/g,"&").replace(/\s+/g," ").trim();
-const safe=v=>{if(!v)return null;const t=v.trim().toUpperCase();if(/^\d{1,2}$/.test(t))return pad(t);if(t==="-")return"XX";if(t==="OFF"||t==="XX")return t;return null;};
-const isFresh=(c,ttl)=>!!c?.fetchedAt&&!Number.isNaN(new Date(c.fetchedAt).getTime())&&Date.now()-new Date(c.fetchedAt).getTime()<ttl;
-const delay=ms=>new Promise(r=>setTimeout(r,ms));
-async function fetchText(url,attempt=1){try{const r=await fetch(url,{headers:{"user-agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36","accept-language":"en-US,en;q=0.9",referer:"https://shillongteerresultlist.co.in/"}});if(!r.ok)throw new Error(`Failed request ${r.status} for ${url}`);return r.text();}catch(e){if(attempt<FETCH_RETRY_ATTEMPTS){await delay(FETCH_RETRY_DELAY_MS*attempt);return fetchText(url,attempt+1);}throw e;}}
-function parseHistoryPage(html){const rows=[];const rx=/<tr>\s*<td>(\d{2}-\d{2}-\d{4})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<\/tr>/g;for(const m of html.matchAll(rx)){const fr=safe(m[2]),sr=safe(m[3]);if(!fr||!sr)continue;rows.push({date:m[1],isoDate:isoFromDash(m[1]),firstRound:fr,secondRound:sr,isOffDay:fr==="OFF"||sr==="OFF"});}return rows;}
-function parseSupplementalHistoryPage(html){const rows=[];const rx=/<tr[^>]*>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<\/tr>/gi;for(const m of html.matchAll(rx)){const iso=isoFromAny(clean(m[1]).replace(/\./g,"-")),fr=safe(m[2]),sr=safe(m[3]);if(!iso||!fr||!sr)continue;rows.push({date:displayFromIso(iso),isoDate:iso,firstRound:fr,secondRound:sr,isOffDay:fr==="OFF"||sr==="OFF"});}return rows;}
-function parseLivePage(html){const dateMatch=html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i),roundMatch=html.match(/<div class="rb"><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><\/div>/i),commonNumbers=[...html.matchAll(/<div class="nc">(\d{2})<\/div>/g)].map(m=>m[1]),recentRows=[];for(const m of html.matchAll(/<tr><td>(\d{2}-\d{2}-\d{4})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><\/tr>/g))recentRows.push({date:m[1],isoDate:isoFromDash(m[1]),firstRound:safe(m[2]),secondRound:safe(m[3])});const date=dateMatch?clean(dateMatch[1]):null;return{date,isoDate:date?isoFromDash(date):null,firstRound:roundMatch?safe(roundMatch[1]):null,secondRound:roundMatch?safe(roundMatch[2]):null,commonNumbers,recentRows};}
-const mergeHistory=(a,b)=>{const map=new Map();for(const row of [...b,...a])if(row?.isoDate)map.set(row.isoDate,row);return [...map.values()].sort((x,y)=>y.isoDate.localeCompare(x.isoDate));};
-async function loadHistory(forceRefresh=false){const cached=readJson(HISTORY_CACHE_PATH,null);if(!forceRefresh&&cached?.rows?.length&&isFresh(cached,HISTORY_CACHE_TTL_MS))return{...cached,fromCache:true};try{const [archiveHtml,suppHtml]=await Promise.all([fetchText(HISTORY_URL),fetchText(SUPPLEMENTAL_HISTORY_URL)]);const rows=mergeHistory(parseHistoryPage(archiveHtml),parseSupplementalHistoryPage(suppHtml));const payload={fetchedAt:new Date().toISOString(),sourceUrl:`${HISTORY_URL} + ${SUPPLEMENTAL_HISTORY_URL}`,rows};writeJson(HISTORY_CACHE_PATH,payload);return{...payload,fromCache:false};}catch(error){if(cached?.rows?.length)return{...cached,fromCache:true,warning:error.message};throw error;}}
-async function loadLive(forceRefresh=false){const cached=readJson(LIVE_CACHE_PATH,null);if(!forceRefresh&&cached?.date&&isFresh(cached,LIVE_CACHE_TTL_MS))return{...cached,fromCache:true};try{const payload={fetchedAt:new Date().toISOString(),sourceUrl:LIVE_URL,...parseLivePage(await fetchText(LIVE_URL))};writeJson(LIVE_CACHE_PATH,payload);return{...payload,fromCache:false};}catch(error){if(cached?.date)return{...cached,fromCache:true,warning:error.message};throw error;}}
-const recentHistory=(rows,days=365)=>{const cutoff=new Date();cutoff.setUTCDate(cutoff.getUTCDate()-days);return rows.filter(r=>r.isoDate&&!r.isOffDay&&new Date(`${r.isoDate}T00:00:00.000Z`)>=cutoff);};
-const digits=t=>/^\d{2}$/.test(t||"")?{direct:t,house:Number(t[0]),ending:Number(t[1])}:null,add=(m,k,a)=>m.set(k,(m.get(k)||0)+a),windowRows=(r,s,l)=>r.slice(s,s+l),resolvedCount=r=>[r?.firstRound,r?.secondRound].filter(v=>/^\d{2}$/.test(v||"")).length;
-const rankMap=(m,f)=>[...m.entries()].sort((a,b)=>b[1]-a[1]||String(a[0]).localeCompare(String(b[0]))).map(([k,s])=>f(k,s));
-function shiftRank(currentRows,previousRows,pick){const c=new Map(),p=new Map();for(const row of currentRows)for(const token of pick(row))add(c,token,1);for(const row of previousRows)for(const token of pick(row))add(p,token,1);return [...new Set([...c.keys(),...p.keys()])].map(key=>({value:/^\d+$/.test(String(key))?Number(key):key,shift:(c.get(key)||0)-(p.get(key)||0),current:c.get(key)||0,previous:p.get(key)||0})).sort((a,b)=>b.shift-a.shift||b.current-a.current||String(a.value).localeCompare(String(b.value)));}
-function buildTransitions(rows){const direct=new Map(),house=new Map(),ending=new Map();for(let i=0;i<rows.length-1;i+=1){const newer=rows[i],older=rows[i+1],key=`${older.firstRound}-${older.secondRound}`,dmap=direct.get(key)||new Map(),hmap=house.get(key)||new Map(),emap=ending.get(key)||new Map();for(const token of [newer.firstRound,newer.secondRound]){const g=digits(token);if(!g)continue;add(dmap,g.direct,1);add(hmap,g.house,1);add(emap,g.ending,1);}direct.set(key,dmap);house.set(key,hmap);ending.set(key,emap);}return{direct,house,ending};}
-function sumDigit(token){return/^\d{2}$/.test(token||"")?Number(token[0])+Number(token[1]):0;}
-function calculatePrediction(historyRows,customSeed){const usable=historyRows.filter(r=>/^\d{2}$/.test(r.firstRound)&&/^\d{2}$/.test(r.secondRound)),recent7=windowRows(usable,0,7),previous7=windowRows(usable,7,7),recent15=windowRows(usable,0,15),recent30=windowRows(usable,0,30),season90=windowRows(usable,0,90),year365=windowRows(usable,0,365),houseScores=new Map(),endingScores=new Map(),directScores=new Map(),pairScores=new Map(),transitionScores=new Map(),transitions=buildTransitions(usable);for(const [rows,w] of [[recent7,8],[recent15,5],[recent30,3],[season90,2],[year365,1]])for(const row of rows)for(const token of [row.firstRound,row.secondRound]){const g=digits(token);if(!g)continue;add(houseScores,g.house,w);add(endingScores,g.ending,w);add(directScores,g.direct,w);}for(const row of recent30){add(pairScores,`${row.firstRound[0]}${row.secondRound[0]}`,2);add(pairScores,`${row.firstRound[1]}${row.secondRound[1]}`,2);const sumShift=(sumDigit(row.firstRound)+sumDigit(row.secondRound))%10;add(endingScores,sumShift,5);add(endingScores,(sumShift+1)%10,3);add(endingScores,(sumShift+9)%10,3);}const latest=customSeed||historyRows.find(r=>resolvedCount(r)>0)||usable[0],key=latest?`${latest.firstRound}-${latest.secondRound}`:null;if(key&&transitions.direct.has(key))for(const [v,s] of transitions.direct.get(key).entries()){add(directScores,v,s*7);add(transitionScores,v,s*7);}if(key&&transitions.house.has(key))for(const [v,s] of transitions.house.get(key).entries())add(houseScores,v,s*6);if(key&&transitions.ending.has(key))for(const [v,s] of transitions.ending.get(key).entries())add(endingScores,v,s*6);const first=digits(latest?.firstRound||""),second=digits(latest?.secondRound||""),seedEnding=first&&second?(first.house+first.ending+second.house+second.ending)%10:null;if(seedEnding!==null)for(const e of [seedEnding,(seedEnding+1)%10,(seedEnding+9)%10])add(endingScores,e,6);if(first){add(houseScores,first.house,5);add(endingScores,first.ending,3);}if(second){add(houseScores,second.house,5);add(endingScores,second.ending,3);}const topHouses=rankMap(houseScores,(value,score)=>({value:Number(value),score})).slice(0,4),topEndings=rankMap(endingScores,(value,score)=>({value:Number(value),score})).slice(0,5),topDirect=rankMap(directScores,(value,score)=>({value,score})).slice(0,10),risingHouses=shiftRank(recent7,previous7,row=>[row.firstRound[0],row.secondRound[0]]).slice(0,4),risingEndings=shiftRank(recent7,previous7,row=>[row.firstRound[1],row.secondRound[1]]).slice(0,5),candidateMap=new Map();const addCandidate=(value,score,reason)=>{const current=candidateMap.get(value)||{value,score:0,reasons:[]};current.score+=score;if(!current.reasons.includes(reason))current.reasons.push(reason);candidateMap.set(value,current);};for(const h of topHouses.slice(0,4))for(const e of topEndings.slice(0,4))addCandidate(`${h.value}${e.value}`,h.score+e.score,"House + ending momentum");for(const d of topDirect.slice(0,6))addCandidate(d.value,d.score*1.35,"Direct recurrence");for(const [pairValue,score] of pairScores.entries())addCandidate(`${pairValue[0]}${pairValue[1]}`,score*1.15,"Shift pair pattern");for(const [value,score] of transitionScores.entries())addCandidate(value,score*1.45,"Previous-day transition");const possibleNumbers=[...candidateMap.values()].sort((a,b)=>b.score-a.score||a.value.localeCompare(b.value)).slice(0,12).map((item,index)=>({value:item.value,score:Number(item.score.toFixed(1)),confidence:index<4?"higher":index<8?"medium":"watch",reason:item.reasons.slice(0,2).join(" + ")}));return{generatedFrom:latest?{date:latest.date,firstRound:latest.firstRound,secondRound:latest.secondRound}:null,topHouses,topEndings,topDirect,possibleNumbers,commonNumbers:possibleNumbers.map(item=>({value:item.value,reason:item.reason})),shiftSummary:{risingHouses,risingEndings},note:"These are informational trend signals from recent movement only. They are not guaranteed outcomes."};}
-function calculateAnalytics(historyRows){const usable=historyRows.filter(r=>/^\d{2}$/.test(r.firstRound)&&/^\d{2}$/.test(r.secondRound)),houseFrequency=Array.from({length:10},(_,value)=>({value,count:0})),endingFrequency=Array.from({length:10},(_,value)=>({value,count:0})),repeatedDirect=new Map(),recentDirect=new Map(),monthlyTrend=new Map();for(const [index,row] of usable.entries()){const monthKey=row.isoDate?row.isoDate.slice(0,7):"unknown",entry=monthlyTrend.get(monthKey)||{month:monthKey,total:0,houses:Array(10).fill(0),endings:Array(10).fill(0)};for(const token of [row.firstRound,row.secondRound]){const g=digits(token);if(!g)continue;houseFrequency[g.house].count+=1;endingFrequency[g.ending].count+=1;add(repeatedDirect,g.direct,1);if(index<21)add(recentDirect,g.direct,1);entry.total+=1;entry.houses[g.house]+=1;entry.endings[g.ending]+=1;}monthlyTrend.set(monthKey,entry);}return{houseFrequency,endingFrequency,strongestDirect:rankMap(repeatedDirect,(value,score)=>({value,count:score})).slice(0,12),recentShiftNumbers:rankMap(recentDirect,(value,score)=>({value,count:score})).slice(0,10),risingHouses:shiftRank(windowRows(usable,0,14),windowRows(usable,14,14),row=>[row.firstRound[0],row.secondRound[0]]).slice(0,5),risingEndings:shiftRank(windowRows(usable,0,14),windowRows(usable,14,14),row=>[row.firstRound[1],row.secondRound[1]]).slice(0,5),months:[...monthlyTrend.values()].sort((a,b)=>a.month.localeCompare(b.month)).slice(-12).map(entry=>({month:entry.month,busiestHouse:entry.houses.indexOf(Math.max(...entry.houses)),busiestEnding:entry.endings.indexOf(Math.max(...entry.endings)),total:entry.total}))};}
-function resolveLivePayload(livePayload,historyRows,predictions){const latestHistory=historyRows[0]||null,resolved={...livePayload,resultSource:"live-page",commonNumbersSource:"live-page"};if(latestHistory&&((!livePayload?.isoDate&&resolvedCount(latestHistory)>0)||(livePayload?.isoDate&&((latestHistory.isoDate>livePayload.isoDate&&resolvedCount(latestHistory)>0)||(latestHistory.isoDate===livePayload.isoDate&&resolvedCount(latestHistory)>resolvedCount(livePayload)))))){resolved.date=latestHistory.date;resolved.isoDate=latestHistory.isoDate;resolved.firstRound=latestHistory.firstRound;resolved.secondRound=latestHistory.secondRound;resolved.resultSource="latest-history";}if(resolved.resultSource==="latest-history"||!Array.isArray(resolved.commonNumbers)||resolved.commonNumbers.length===0){const derived=(predictions.commonNumbers||[]).map(item=>item.value).filter(Boolean);if(derived.length){resolved.commonNumbers=derived;resolved.commonNumbersSource="algorithm";}}return resolved;}
-async function backgroundRefresh(){if(refreshInProgress)return;refreshInProgress=true;try{await Promise.all([loadHistory(true),loadLive(true)]);lastSuccessfulRefresh=new Date().toISOString();lastRefreshError=null;console.log(`[AUTO-REFRESH] Completed at ${lastSuccessfulRefresh}`);}catch(error){lastRefreshError=error.message;console.error(`[AUTO-REFRESH] Error: ${error.message}`);}finally{refreshInProgress=false;}}
-function startBackgroundRefresh(){console.log(`[AUTO-REFRESH] Running every ${AUTO_REFRESH_INTERVAL_MS/1000} seconds`);setTimeout(()=>{backgroundRefresh();},5000);setInterval(()=>{backgroundRefresh();},AUTO_REFRESH_INTERVAL_MS);}
-const jsonResponse=(res,code,payload)=>{res.writeHead(code,{"content-type":"application/json; charset=utf-8","cache-control":"no-store, max-age=0"});res.end(JSON.stringify(payload));};
-function serveStatic(requestPath,response){const normalized=requestPath==="/" ? "/index.html":requestPath,targetPath=path.normalize(path.join(PUBLIC_DIR,normalized));if(!targetPath.startsWith(PUBLIC_DIR)){response.writeHead(403);response.end("Forbidden");return;}fs.readFile(targetPath,(error,fileBuffer)=>{if(error){response.writeHead(error.code==="ENOENT"?404:500);response.end(error.code==="ENOENT"?"Not found":"Server error");return;}const extension=path.extname(targetPath);response.writeHead(200,{"content-type":MIME_TYPES[extension]||"application/octet-stream","cache-control":extension===".html"?"no-cache":"public, max-age=300"});response.end(fileBuffer);});}
-const server=http.createServer(async(request,response)=>{const requestUrl=new URL(request.url,`http://${request.headers.host}`);try{if(requestUrl.pathname==="/api/dashboard"){const days=Math.max(30,Math.min(365,Number(requestUrl.searchParams.get("days"))||365)),forceRefresh=requestUrl.searchParams.get("refresh")==="1",[historyPayload,livePayload]=await Promise.all([loadHistory(forceRefresh),loadLive(forceRefresh)]),history=recentHistory(historyPayload.rows,days),predictions=calculatePrediction(history),analytics=calculateAnalytics(history),resolvedLive=resolveLivePayload(livePayload,history,predictions);jsonResponse(response,200,{live:resolvedLive,history,predictions,analytics,dreamNumbers:DREAM_NUMBER_MAP,meta:{historySource:historyPayload.sourceUrl,liveSource:livePayload.sourceUrl,liveDisplaySource:resolvedLive.resultSource,commonNumbersSource:resolvedLive.commonNumbersSource,fetchedAt:new Date().toISOString(),usedCache:historyPayload.fromCache||livePayload.fromCache,warnings:[historyPayload.warning,livePayload.warning].filter(Boolean),autoRefresh:{intervalSeconds:AUTO_REFRESH_INTERVAL_MS/1000,refreshInProgress,lastSuccessfulRefresh,lastRefreshError}}});return;}if(requestUrl.pathname==="/api/history"){const days=Math.max(30,Math.min(365,Number(requestUrl.searchParams.get("days"))||365)),forceRefresh=requestUrl.searchParams.get("refresh")==="1",historyPayload=await loadHistory(forceRefresh);jsonResponse(response,200,recentHistory(historyPayload.rows,days));return;}if(requestUrl.pathname==="/api/live"){const forceRefresh=requestUrl.searchParams.get("refresh")==="1";jsonResponse(response,200,await loadLive(forceRefresh));return;}if(requestUrl.pathname==="/api/predict"||requestUrl.pathname==="/api/insights"){const historyPayload=await loadHistory(),history=recentHistory(historyPayload.rows,365),fr=safe(requestUrl.searchParams.get("fr")),sr=safe(requestUrl.searchParams.get("sr")),customSeed=/^\d{2}$/.test(fr||"")&&/^\d{2}$/.test(sr||"")?{date:"Manual entry",firstRound:fr,secondRound:sr}:null;jsonResponse(response,200,calculatePrediction(history,customSeed));return;}serveStatic(requestUrl.pathname,response);}catch(error){jsonResponse(response,500,{error:error.message});}});
-server.listen(PORT,()=>{console.log(`Shillong Teer dashboard running at http://localhost:${PORT}`);startBackgroundRefresh();});
+const http = require("http");
+const fs = require("fs");
+const path = require("path");
+const { URL } = require("url");
+
+const PORT = process.env.PORT || 3000;
+const PUBLIC_DIR = path.join(__dirname, "public");
+const DATA_DIR = path.join(__dirname, "data");
+const HISTORY_CACHE_PATH = path.join(DATA_DIR, "history-cache.json");
+const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
+
+const LIVE_URL = "https://shillongteer.com/";
+const HISTORY_URL = "https://shillongteer.com/previous-results/";
+const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
+
+const LIVE_CACHE_TTL_MS = 60 * 1000;
+const HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
+const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
+const FETCH_RETRY_ATTEMPTS = 3;
+const FETCH_RETRY_DELAY_MS = 1200;
+
+const MIME_TYPES = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "application/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".ico": "image/x-icon",
+  ".txt": "text/plain; charset=utf-8",
+  ".xml": "application/xml; charset=utf-8",
+};
+
+const DREAM_NUMBER_MAP = [
+  { symbol: "Snake", number: "07", category: "Animal" },
+  { symbol: "Water", number: "18", category: "Nature" },
+  { symbol: "Fish", number: "28", category: "Animal" },
+  { symbol: "Temple", number: "09", category: "Spiritual" },
+  { symbol: "River", number: "35", category: "Nature" },
+  { symbol: "Baby", number: "14", category: "People" },
+  { symbol: "Marriage", number: "24", category: "Life event" },
+  { symbol: "Death", number: "00", category: "Symbolic" },
+  { symbol: "Gold", number: "48", category: "Object" },
+  { symbol: "Fire", number: "13", category: "Nature" },
+  { symbol: "House", number: "25", category: "Place" },
+  { symbol: "Elephant", number: "72", category: "Animal" },
+  { symbol: "Tiger", number: "57", category: "Animal" },
+  { symbol: "Dog", number: "21", category: "Animal" },
+  { symbol: "Cat", number: "16", category: "Animal" },
+  { symbol: "Rain", number: "62", category: "Nature" },
+  { symbol: "Blood", number: "89", category: "Symbolic" },
+  { symbol: "Flying", number: "51", category: "Motion" },
+  { symbol: "Falling", number: "40", category: "Motion" },
+  { symbol: "Mother", number: "31", category: "People" },
+  { symbol: "Father", number: "32", category: "People" },
+  { symbol: "Child", number: "11", category: "People" },
+  { symbol: "Money", number: "83", category: "Object" },
+  { symbol: "Jewellery", number: "95", category: "Object" },
+  { symbol: "Cow", number: "46", category: "Animal" },
+  { symbol: "Bird", number: "63", category: "Animal" },
+  { symbol: "Moon", number: "52", category: "Nature" },
+  { symbol: "Sun", number: "19", category: "Nature" },
+  { symbol: "Tree", number: "64", category: "Nature" },
+  { symbol: "Climbing", number: "38", category: "Motion" },
+  { symbol: "Boat", number: "44", category: "Travel" },
+  { symbol: "Road", number: "23", category: "Travel" },
+  { symbol: "School", number: "17", category: "Place" },
+  { symbol: "Market", number: "54", category: "Place" },
+  { symbol: "Doctor", number: "68", category: "People" },
+  { symbol: "Police", number: "76", category: "People" },
+  { symbol: "Wedding dress", number: "84", category: "Object" },
+  { symbol: "Fruit", number: "27", category: "Food" },
+  { symbol: "Flower", number: "41", category: "Nature" },
+  { symbol: "Storm", number: "93", category: "Nature" },
+];
+
+let refreshInProgress = false;
+let lastRefreshError = null;
+let lastSuccessfulRefresh = null;
+
+ensureDir(DATA_DIR);
+
+function ensureDir(target) {
+  if (!fs.existsSync(target)) {
+    fs.mkdirSync(target, { recursive: true });
+  }
+}
+
+function padNumber(value) {
+  return String(value).padStart(2, "0");
+}
+
+function parseDdMmYyyy(value) {
+  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec((value || "").trim());
+  if (!match) return null;
+  const [, dd, mm, yyyy] = match;
+  return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
+}
+
+function parseDdMmYyyyDot(value) {
+  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec((value || "").trim());
+  if (!match) return null;
+  const [, dd, mm, yyyy] = match;
+  return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
+}
+
+function formatIsoDate(dateString) {
+  const date = parseDdMmYyyy(dateString);
+  return date ? date.toISOString().slice(0, 10) : null;
+}
+
+function formatIsoDateFromAny(dateString) {
+  const dashDate = parseDdMmYyyy(dateString);
+  if (dashDate) return dashDate.toISOString().slice(0, 10);
+  const dotDate = parseDdMmYyyyDot(dateString);
+  return dotDate ? dotDate.toISOString().slice(0, 10) : null;
+}
+
+function formatDisplayDateFromIso(isoDate) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || "");
+  if (!match) return isoDate;
+  const [, yyyy, mm, dd] = match;
+  return `${dd}-${mm}-${yyyy}`;
+}
+
+function cleanText(value) {
+  return (value || "")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function safeNumberToken(value) {
+  if (!value) return null;
+  const token = value.trim().toUpperCase();
+  if (/^\d{1,2}$/.test(token)) return padNumber(token);
+  if (token === "-") return "XX";
+  if (token === "OFF" || token === "XX") return token;
+  return null;
+}
+
+function isResolvedNumberToken(value) {
+  return /^\d{2}$/.test(value || "");
+}
+
+function resolvedRoundCount(row) {
+  return [row?.firstRound, row?.secondRound].filter(isResolvedNumberToken).length;
+}
+
+function hasResolvedRound(row) {
+  return resolvedRoundCount(row) > 0;
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchText(url, attempt = 1) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        "user-agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+        "accept-language": "en-US,en;q=0.9",
+        referer: "https://shillongteerresultlist.co.in/",
+      },
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed request ${response.status} for ${url}`);
+    }
+
+    return response.text();
+  } catch (error) {
+    if (attempt < FETCH_RETRY_ATTEMPTS) {
+      await delay(FETCH_RETRY_DELAY_MS * attempt);
+      return fetchText(url, attempt + 1);
+    }
+    throw error;
+  }
+}
+
+function parseHistoryPage(html) {
+  const rows = [];
+  const rowPattern =
+    /<tr>\s*<td>(\d{2}-\d{2}-\d{4})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<\/tr>/g;
+
+  for (const match of html.matchAll(rowPattern)) {
+    const date = match[1];
+    const firstRound = safeNumberToken(match[2]);
+    const secondRound = safeNumberToken(match[3]);
+    if (!firstRound || !secondRound) continue;
+
+    rows.push({
+      date,
+      isoDate: formatIsoDate(date),
+      firstRound,
+      secondRound,
+      isOffDay: firstRound === "OFF" || secondRound === "OFF",
+    });
+  }
+
+  return rows;
+}
+
+function parseSupplementalHistoryPage(html) {
+  const rows = [];
+  const rowPattern =
+    /<tr[^>]*>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<\/tr>/gi;
+
+  for (const match of html.matchAll(rowPattern)) {
+    const sourceDate = cleanText(match[1]).replace(/\./g, "-");
+    const isoDate = formatIsoDateFromAny(sourceDate);
+    const firstRound = safeNumberToken(match[2]);
+    const secondRound = safeNumberToken(match[3]);
+    if (!isoDate || !firstRound || !secondRound) continue;
+
+    rows.push({
+      date: formatDisplayDateFromIso(isoDate),
+      isoDate,
+      firstRound,
+      secondRound,
+      isOffDay: firstRound === "OFF" || secondRound === "OFF",
+    });
+  }
+
+  return rows;
+}
+
+function extractLiveNumbersFallback(html) {
+  const rnNumbers = [...html.matchAll(/class="rn">([A-Z0-9-]{1,3})</gi)]
+    .map((match) => safeNumberToken(match[1]))
+    .filter(Boolean);
+
+  if (rnNumbers.length >= 2) {
+    return {
+      firstRound: rnNumbers[0],
+      secondRound: rnNumbers[1],
+    };
+  }
+
+  const textNumbers = [...html.matchAll(/\b(\d{2}|XX|OFF)\b/g)]
+    .map((match) => safeNumberToken(match[1]))
+    .filter(Boolean);
+
+  return {
+    firstRound: textNumbers[0] || null,
+    secondRound: textNumbers[1] || null,
+  };
+}
+
+function parseLivePage(html) {
+  const dateMatch = html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i);
+  const strictRoundMatch = html.match(
+    /<div class="rb"><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><\/div>/i
+  );
+  const fallbackRounds = extractLiveNumbersFallback(html);
+
+  const commonNumbers = [...html.matchAll(/<div class="nc">(\d{2})<\/div>/g)].map((match) => match[1]);
+
+  const recentRows = [];
+  const recentPattern =
+    /<tr><td>(\d{2}-\d{2}-\d{4})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><\/tr>/g;
+
+  for (const match of html.matchAll(recentPattern)) {
+    recentRows.push({
+      date: match[1],
+      isoDate: formatIsoDate(match[1]),
+      firstRound: safeNumberToken(match[2]),
+      secondRound: safeNumberToken(match[3]),
+    });
+  }
+
+  const liveDate = dateMatch ? cleanText(dateMatch[1]) : null;
+
+  return {
+    date: liveDate,
+    isoDate: liveDate ? formatIsoDate(liveDate) : null,
+    firstRound: strictRoundMatch ? safeNumberToken(strictRoundMatch[1]) : fallbackRounds.firstRound,
+    secondRound: strictRoundMatch ? safeNumberToken(strictRoundMatch[2]) : fallbackRounds.secondRound,
+    commonNumbers,
+    recentRows,
+  };
+}
+
+function writeJson(filePath, value) {
+  fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
+}
+
+function readJson(filePath, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return fallback;
+  }
+}
+
+function isCacheFresh(cacheValue, ttlMs) {
+  if (!cacheValue?.fetchedAt) return false;
+  const fetchedAt = new Date(cacheValue.fetchedAt).getTime();
+  if (Number.isNaN(fetchedAt)) return false;
+  return Date.now() - fetchedAt < ttlMs;
+}
+
+function mergeHistoryRows(primaryRows, supplementalRows) {
+  const merged = new Map();
+
+  for (const row of [...supplementalRows, ...primaryRows]) {
+    if (!row?.isoDate) continue;
+    merged.set(row.isoDate, row);
+  }
+
+  return [...merged.values()].sort((a, b) => b.isoDate.localeCompare(a.isoDate));
+}
+
+async function loadHistory(forceRefresh = false) {
+  const cached = readJson(HISTORY_CACHE_PATH, null);
+  if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) {
+    return { ...cached, fromCache: true };
+  }
+
+  try {
+    const [archiveHtml, supplementalHtml] = await Promise.all([
+      fetchText(HISTORY_URL),
+      fetchText(SUPPLEMENTAL_HISTORY_URL),
+    ]);
+
+    const rows = mergeHistoryRows(
+      parseHistoryPage(archiveHtml),
+      parseSupplementalHistoryPage(supplementalHtml)
+    );
+
+    const payload = {
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: `${HISTORY_URL} + ${SUPPLEMENTAL_HISTORY_URL}`,
+      rows,
+    };
+
+    writeJson(HISTORY_CACHE_PATH, payload);
+    return { ...payload, fromCache: false };
+  } catch (error) {
+    if (cached?.rows?.length) {
+      return { ...cached, fromCache: true, warning: error.message };
+    }
+    throw error;
+  }
+}
+
+async function loadLive(forceRefresh = false) {
+  const cached = readJson(LIVE_CACHE_PATH, null);
+  if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) {
+    return { ...cached, fromCache: true };
+  }
+
+  try {
+    const payload = {
+      fetchedAt: new Date().toISOString(),
+      sourceUrl: LIVE_URL,
+      ...parseLivePage(await fetchText(LIVE_URL)),
+    };
+
+    writeJson(LIVE_CACHE_PATH, payload);
+    return { ...payload, fromCache: false };
+  } catch (error) {
+    if (cached?.date) {
+      return { ...cached, fromCache: true, warning: error.message };
+    }
+    throw error;
+  }
+}
+
+function getLastNDaysHistory(rows, days = 365) {
+  const cutoff = new Date();
+  cutoff.setUTCDate(cutoff.getUTCDate() - days);
+
+  return rows.filter((row) => {
+    if (!row.isoDate || row.isOffDay) return false;
+    return new Date(`${row.isoDate}T00:00:00.000Z`) >= cutoff;
+  });
+}
+
+function getDigits(numberToken) {
+  if (!/^\d{2}$/.test(numberToken || "")) return null;
+  return {
+    direct: numberToken,
+    house: Number(numberToken[0]),
+    ending: Number(numberToken[1]),
+  };
+}
+
+function weightedCounter() {
+  return new Map();
+}
+
+function addWeighted(map, key, amount) {
+  map.set(key, (map.get(key) || 0) + amount);
+}
+
+function rankMap(map, formatter) {
+  return [...map.entries()]
+    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
+    .map(([key, score]) => formatter(key, score));
+}
+
+function sumDigitToken(token) {
+  if (!/^\d{2}$/.test(token || "")) return null;
+  return Number(token[0]) + Number(token[1]);
+}
+
+function buildWindow(rows, start, length) {
+  return rows.slice(start, start + length);
+}
+
+function scoreCounterRows(rows, weight, houseScores, endingScores, directScores) {
+  for (const row of rows) {
+    for (const token of [row.firstRound, row.secondRound]) {
+      const digits = getDigits(token);
+      if (!digits) continue;
+      addWeighted(houseScores, digits.house, weight);
+      addWeighted(endingScores, digits.ending, weight);
+      addWeighted(directScores, digits.direct, weight);
+    }
+  }
+}
+
+function getTransitionKey(row) {
+  if (!row) return null;
+  return `${row.firstRound}-${row.secondRound}`;
+}
+
+function buildTransitionModel(rows) {
+  const directNext = new Map();
+  const houseNext = new Map();
+  const endingNext = new Map();
+
+  for (let index = 0; index < rows.length - 1; index += 1) {
+    const newer = rows[index];
+    const older = rows[index + 1];
+    const olderKey = getTransitionKey(older);
+    if (!olderKey) continue;
+
+    const directMap = directNext.get(olderKey) || new Map();
+    const houseMap = houseNext.get(olderKey) || new Map();
+    const endingMap = endingNext.get(olderKey) || new Map();
+
+    for (const token of [newer.firstRound, newer.secondRound]) {
+      const digits = getDigits(token);
+      if (!digits) continue;
+      addWeighted(directMap, digits.direct, 1);
+      addWeighted(houseMap, digits.house, 1);
+      addWeighted(endingMap, digits.ending, 1);
+    }
+
+    directNext.set(olderKey, directMap);
+    houseNext.set(olderKey, houseMap);
+    endingNext.set(olderKey, endingMap);
+  }
+
+  return { directNext, houseNext, endingNext };
+}
+
+function calculateShiftRanking(currentRows, previousRows, tokenSelector) {
+  const currentMap = new Map();
+  const previousMap = new Map();
+
+  for (const row of currentRows) {
+    for (const token of tokenSelector(row)) addWeighted(currentMap, token, 1);
+  }
+
+  for (const row of previousRows) {
+    for (const token of tokenSelector(row)) addWeighted(previousMap, token, 1);
+  }
+
+  const allKeys = new Set([...currentMap.keys(), ...previousMap.keys()]);
+
+  return [...allKeys]
+    .map((key) => ({
+      value: /^\d+$/.test(String(key)) ? Number(key) : key,
+      shift: (currentMap.get(key) || 0) - (previousMap.get(key) || 0),
+      current: currentMap.get(key) || 0,
+      previous: previousMap.get(key) || 0,
+    }))
+    .sort((a, b) => b.shift - a.shift || b.current - a.current || String(a.value).localeCompare(String(b.value)));
+}
+
+function buildLiveSeed(livePayload) {
+  if (!livePayload?.date) return null;
+  return {
+    date: livePayload.date,
+    firstRound: livePayload.firstRound || "XX",
+    secondRound: livePayload.secondRound || "XX",
+  };
+}
+
+function calculatePrediction(historyRows, customSeed, livePayload) {
+  const usable = historyRows.filter(
+    (row) => /^\d{2}$/.test(row.firstRound) && /^\d{2}$/.test(row.secondRound)
+  );
+
+  const recent7 = buildWindow(usable, 0, 7);
+  const previous7 = buildWindow(usable, 7, 7);
+  const recent15 = buildWindow(usable, 0, 15);
+  const recent30 = buildWindow(usable, 0, 30);
+  const season90 = buildWindow(usable, 0, 90);
+  const year365 = buildWindow(usable, 0, 365);
+
+  const houseScores = weightedCounter();
+  const endingScores = weightedCounter();
+  const directScores = weightedCounter();
+  const pairScores = weightedCounter();
+  const transitionScores = weightedCounter();
+  const { directNext, houseNext, endingNext } = buildTransitionModel(usable);
+
+  scoreCounterRows(recent7, 8, houseScores, endingScores, directScores);
+  scoreCounterRows(recent15, 5, houseScores, endingScores, directScores);
+  scoreCounterRows(recent30, 3, houseScores, endingScores, directScores);
+  scoreCounterRows(season90, 2, houseScores, endingScores, directScores);
+  scoreCounterRows(year365, 1, houseScores, endingScores, directScores);
+
+  for (const row of recent30) {
+    const pairA = `${row.firstRound[0]}${row.secondRound[0]}`;
+    const pairB = `${row.firstRound[1]}${row.secondRound[1]}`;
+    addWeighted(pairScores, pairA, 2);
+    addWeighted(pairScores, pairB, 2);
+
+    const sumShift = (sumDigitToken(row.firstRound) + sumDigitToken(row.secondRound)) % 10;
+    addWeighted(endingScores, sumShift, 5);
+    addWeighted(endingScores, (sumShift + 1) % 10, 3);
+    addWeighted(endingScores, (sumShift + 9) % 10, 3);
+  }
+
+  const liveSeed = buildLiveSeed(livePayload);
+  const latest = customSeed || liveSeed || historyRows.find((row) => hasResolvedRound(row)) || usable[0];
+  const latestKey = latest ? getTransitionKey(latest) : null;
+
+  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && directNext.has(latestKey)) {
+    for (const [value, score] of directNext.get(latestKey).entries()) {
+      addWeighted(directScores, value, score * 7);
+      addWeighted(transitionScores, value, score * 7);
+    }
+  }
+
+  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && houseNext.has(latestKey)) {
+    for (const [value, score] of houseNext.get(latestKey).entries()) {
+      addWeighted(houseScores, value, score * 6);
+    }
+  }
+
+  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && endingNext.has(latestKey)) {
+    for (const [value, score] of endingNext.get(latestKey).entries()) {
+      addWeighted(endingScores, value, score * 6);
+    }
+  }
+
+  const latestFirst = getDigits(latest?.firstRound || "");
+  const latestSecond = getDigits(latest?.secondRound || "");
+
+  if (latestFirst) {
+    addWeighted(houseScores, latestFirst.house, 8);
+    addWeighted(endingScores, latestFirst.ending, 5);
+    addWeighted(directScores, latestFirst.direct, 4);
+  }
+
+  if (latestSecond) {
+    addWeighted(houseScores, latestSecond.house, 8);
+    addWeighted(endingScores, latestSecond.ending, 5);
+    addWeighted(directScores, latestSecond.direct, 4);
+  }
+
+  if (latestFirst && latestSecond) {
+    const seedEnding =
+      (latestFirst.house + latestFirst.ending + latestSecond.house + latestSecond.ending) % 10;
+    [seedEnding, (seedEnding + 1) % 10, (seedEnding + 9) % 10].forEach((ending) =>
+      addWeighted(endingScores, ending, 6)
+    );
+  }
+
+  for (const commonNumber of livePayload?.commonNumbers || []) {
+    if (/^\d{2}$/.test(commonNumber)) {
+      addWeighted(directScores, commonNumber, 3);
+      addWeighted(houseScores, Number(commonNumber[0]), 2);
+      addWeighted(endingScores, Number(commonNumber[1]), 2);
+    }
+  }
+
+  const topHouses = rankMap(houseScores, (value, score) => ({
+    value: Number(value),
+    score,
+  })).slice(0, 4);
+
+  const topEndings = rankMap(endingScores, (value, score) => ({
+    value: Number(value),
+    score,
+  })).slice(0, 5);
+
+  const topDirect = rankMap(directScores, (value, score) => ({
+    value,
+    score,
+  })).slice(0, 10);
+
+  const risingHouses = calculateShiftRanking(
+    recent7,
+    previous7,
+    (row) => [row.firstRound[0], row.secondRound[0]]
+  ).slice(0, 4);
+
+  const risingEndings = calculateShiftRanking(
+    recent7,
+    previous7,
+    (row) => [row.firstRound[1], row.secondRound[1]]
+  ).slice(0, 5);
+
+  const candidateMap = new Map();
+
+  function addCandidate(value, score, reason) {
+    const current = candidateMap.get(value) || { value, score: 0, reasons: [] };
+    current.score += score;
+    if (!current.reasons.includes(reason)) current.reasons.push(reason);
+    candidateMap.set(value, current);
+  }
+
+  for (const house of topHouses.slice(0, 4)) {
+    for (const ending of topEndings.slice(0, 4)) {
+      addCandidate(`${house.value}${ending.value}`, house.score + ending.score, "House + ending momentum");
+    }
+  }
+
+  for (const direct of topDirect.slice(0, 6)) {
+    addCandidate(direct.value, direct.score * 1.35, "Direct recurrence");
+  }
+
+  for (const [pairValue, score] of pairScores.entries()) {
+    addCandidate(`${pairValue[0]}${pairValue[1]}`, score * 1.15, "Shift pair pattern");
+  }
+
+  for (const [value, score] of transitionScores.entries()) {
+    addCandidate(value, score * 1.45, "Previous-day transition");
+  }
+
+  const possibleNumbers = [...candidateMap.values()]
+    .sort((a, b) => b.score - a.score || a.value.localeCompare(b.value))
+    .slice(0, 12)
+    .map((item, index) => ({
+      value: item.value,
+      score: Number(item.score.toFixed(1)),
+      confidence: index < 4 ? "higher" : index < 8 ? "medium" : "watch",
+      reason: item.reasons.slice(0, 2).join(" + "),
+    }));
+
+  return {
+    generatedFrom: latest
+      ? {
+          date: latest.date,
+          firstRound: latest.firstRound,
+          secondRound: latest.secondRound,
+        }
+      : null,
+    topHouses,
+    topEndings,
+    topDirect,
+    possibleNumbers,
+    commonNumbers: possibleNumbers.map((item) => ({
+      value: item.value,
+      reason: item.reason,
+    })),
+    shiftSummary: {
+      risingHouses,
+      risingEndings,
+    },
+    note:
+      "These are informational trend signals from recent movement only. They are not guaranteed outcomes.",
+  };
+}
+
+function calculateAnalytics(historyRows) {
+  const usable = historyRows.filter(
+    (row) => /^\d{2}$/.test(row.firstRound) && /^\d{2}$/.test(row.secondRound)
+  );
+
+  const houseFrequency = Array.from({ length: 10 }, (_, value) => ({
+    value,
+    count: 0,
+  }));
+  const endingFrequency = Array.from({ length: 10 }, (_, value) => ({
+    value,
+    count: 0,
+  }));
+  const repeatedDirect = new Map();
+  const recentDirect = new Map();
+  const monthlyTrend = new Map();
+
+  for (const [index, row] of usable.entries()) {
+    const monthKey = row.isoDate ? row.isoDate.slice(0, 7) : "unknown";
+    const monthEntry = monthlyTrend.get(monthKey) || {
+      month: monthKey,
+      total: 0,
+      houses: Array(10).fill(0),
+      endings: Array(10).fill(0),
+    };
+
+    for (const token of [row.firstRound, row.secondRound]) {
+      const digits = getDigits(token);
+      if (!digits) continue;
+      houseFrequency[digits.house].count += 1;
+      endingFrequency[digits.ending].count += 1;
+      addWeighted(repeatedDirect, digits.direct, 1);
+      if (index < 21) addWeighted(recentDirect, digits.direct, 1);
+      monthEntry.total += 1;
+      monthEntry.houses[digits.house] += 1;
+      monthEntry.endings[digits.ending] += 1;
+    }
+
+    monthlyTrend.set(monthKey, monthEntry);
+  }
+
+  return {
+    houseFrequency,
+    endingFrequency,
+    strongestDirect: rankMap(repeatedDirect, (value, score) => ({
+      value,
+      count: score,
+    })).slice(0, 12),
+    recentShiftNumbers: rankMap(recentDirect, (value, score) => ({
+      value,
+      count: score,
+    })).slice(0, 10),
+    risingHouses: calculateShiftRanking(
+      buildWindow(usable, 0, 14),
+      buildWindow(usable, 14, 14),
+      (row) => [row.firstRound[0], row.secondRound[0]]
+    ).slice(0, 5),
+    risingEndings: calculateShiftRanking(
+      buildWindow(usable, 0, 14),
+      buildWindow(usable, 14, 14),
+      (row) => [row.firstRound[1], row.secondRound[1]]
+    ).slice(0, 5),
+    months: [...monthlyTrend.values()]
+      .sort((a, b) => a.month.localeCompare(b.month))
+      .slice(-12)
+      .map((entry) => ({
+        month: entry.month,
+        busiestHouse: entry.houses.indexOf(Math.max(...entry.houses)),
+        busiestEnding: entry.endings.indexOf(Math.max(...entry.endings)),
+        total: entry.total,
+      })),
+  };
+}
+
+function shouldPreferHistoryRow(livePayload, historyRow) {
+  if (!historyRow?.isoDate) return false;
+  if (!livePayload?.isoDate) return hasResolvedRound(historyRow);
+
+  const dateComparison = historyRow.isoDate.localeCompare(livePayload.isoDate);
+
+  if (dateComparison > 0) return hasResolvedRound(historyRow);
+
+  if (dateComparison === 0) {
+    return resolvedRoundCount(historyRow) > resolvedRoundCount(livePayload);
+  }
+
+  return false;
+}
+
+function resolveLivePayload(livePayload, historyRows, predictions) {
+  const latestHistory = historyRows[0] || null;
+  const resolved = {
+    ...livePayload,
+    resultSource: "live-page",
+    commonNumbersSource: "live-page",
+  };
+
+  if (shouldPreferHistoryRow(livePayload, latestHistory)) {
+    resolved.date = latestHistory.date;
+    resolved.isoDate = latestHistory.isoDate;
+    resolved.firstRound = latestHistory.firstRound;
+    resolved.secondRound = latestHistory.secondRound;
+    resolved.resultSource = "latest-history";
+  }
+
+  const shouldUsePredictionCommonNumbers =
+    resolved.resultSource === "latest-history" ||
+    !Array.isArray(resolved.commonNumbers) ||
+    resolved.commonNumbers.length === 0;
+
+  if (shouldUsePredictionCommonNumbers) {
+    const derivedCommonNumbers = (predictions.commonNumbers || [])
+      .map((item) => item.value)
+      .filter(Boolean);
+
+    if (derivedCommonNumbers.length) {
+      resolved.commonNumbers = derivedCommonNumbers;
+      resolved.commonNumbersSource = "algorithm";
+    }
+  }
+
+  return resolved;
+}
+
+async function backgroundRefresh() {
+  if (refreshInProgress) return;
+  refreshInProgress = true;
+
+  try {
+    await Promise.all([loadHistory(true), loadLive(true)]);
+    lastSuccessfulRefresh = new Date().toISOString();
+    lastRefreshError = null;
+    console.log(`[AUTO-REFRESH] Completed at ${lastSuccessfulRefresh}`);
+  } catch (error) {
+    lastRefreshError = error.message;
+    console.error(`[AUTO-REFRESH] Error: ${error.message}`);
+  } finally {
+    refreshInProgress = false;
+  }
+}
+
+function startBackgroundRefresh() {
+  console.log(`[AUTO-REFRESH] Running every ${AUTO_REFRESH_INTERVAL_MS / 1000} seconds`);
+  setTimeout(() => {
+    backgroundRefresh();
+  }, 5000);
+  setInterval(() => {
+    backgroundRefresh();
+  }, AUTO_REFRESH_INTERVAL_MS);
+}
+
+function jsonResponse(response, statusCode, payload) {
+  response.writeHead(statusCode, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store, max-age=0",
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function serveStatic(requestPath, response) {
+  const normalized = requestPath === "/" ? "/index.html" : requestPath;
+  const targetPath = path.normalize(path.join(PUBLIC_DIR, normalized));
+
+  if (!targetPath.startsWith(PUBLIC_DIR)) {
+    response.writeHead(403);
+    response.end("Forbidden");
+    return;
+  }
+
+  fs.readFile(targetPath, (error, fileBuffer) => {
+    if (error) {
+      response.writeHead(error.code === "ENOENT" ? 404 : 500);
+      response.end(error.code === "ENOENT" ? "Not found" : "Server error");
+      return;
+    }
+
+    const extension = path.extname(targetPath);
+    response.writeHead(200, {
+      "content-type": MIME_TYPES[extension] || "application/octet-stream",
+      "cache-control": extension === ".html" ? "no-cache" : "public, max-age=300",
+    });
+    response.end(fileBuffer);
+  });
+}
+
+const server = http.createServer(async (request, response) => {
+  const requestUrl = new URL(request.url, `http://${request.headers.host}`);
+
+  try {
+    if (requestUrl.pathname === "/api/dashboard") {
+      const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
+      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
+
+      const [historyPayload, livePayload] = await Promise.all([
+        loadHistory(forceRefresh),
+        loadLive(forceRefresh),
+      ]);
+
+      const history = getLastNDaysHistory(historyPayload.rows, days);
+      const predictions = calculatePrediction(history, null, livePayload);
+      const analytics = calculateAnalytics(history);
+      const resolvedLive = resolveLivePayload(livePayload, history, predictions);
+
+      jsonResponse(response, 200, {
+        live: resolvedLive,
+        history,
+        predictions,
+        analytics,
+        dreamNumbers: DREAM_NUMBER_MAP,
+        meta: {
+          historySource: historyPayload.sourceUrl,
+          liveSource: livePayload.sourceUrl,
+          liveDisplaySource: resolvedLive.resultSource,
+          commonNumbersSource: resolvedLive.commonNumbersSource,
+          fetchedAt: new Date().toISOString(),
+          usedCache: historyPayload.fromCache || livePayload.fromCache,
+          warnings: [historyPayload.warning, livePayload.warning].filter(Boolean),
+          autoRefresh: {
+            intervalSeconds: AUTO_REFRESH_INTERVAL_MS / 1000,
+            refreshInProgress,
+            lastSuccessfulRefresh,
+            lastRefreshError,
+          },
+        },
+      });
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/history") {
+      const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
+      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
+      const historyPayload = await loadHistory(forceRefresh);
+      jsonResponse(response, 200, getLastNDaysHistory(historyPayload.rows, days));
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/live") {
+      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
+      jsonResponse(response, 200, await loadLive(forceRefresh));
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/predict" || requestUrl.pathname === "/api/insights") {
+      const historyPayload = await loadHistory();
+      const history = getLastNDaysHistory(historyPayload.rows, 365);
+      const livePayload = await loadLive();
+      const fr = safeNumberToken(requestUrl.searchParams.get("fr"));
+      const sr = safeNumberToken(requestUrl.searchParams.get("sr"));
+      const customSeed =
+        /^\d{2}$/.test(fr || "") && /^\d{2}$/.test(sr || "")
+          ? { date: "Manual entry", firstRound: fr, secondRound: sr }
+          : null;
+
+      jsonResponse(response, 200, calculatePrediction(history, customSeed, livePayload));
+      return;
+    }
+
+    serveStatic(requestUrl.pathname, response);
+  } catch (error) {
+    jsonResponse(response, 500, {
+      error: error.message,
+    });
+  }
+});
+
+server.listen(PORT, () => {
+  console.log(`Shillong Teer dashboard running at http://localhost:${PORT}`);
+  startBackgroundRefresh();
+});
