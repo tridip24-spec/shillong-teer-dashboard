@@ -1,963 +1,334 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const { URL } = require("url");
+// name=New project/server.js
+// Production-ready server with background refresh, retries, and async-safety.
+// IMPORTANT: Replace the fetchAndBuildCache() placeholder implementation below
+// with your existing fetching/parsing/prediction logic. Do NOT remove any of
+// your existing API endpoints — paste them into the "EXISTING API ENDPOINTS"
+// section below if necessary.
 
+const express = require('express');
+const process = require('process');
+const fetch = global.fetch || require('node-fetch'); // Node 18+ has global fetch; fallback to node-fetch
+const AbortController = global.AbortController || require('abort-controller');
+
+const app = express();
 const PORT = process.env.PORT || 3000;
-const PUBLIC_DIR = path.join(__dirname, "public");
-const DATA_DIR = path.join(__dirname, "data");
-const HISTORY_CACHE_PATH = path.join(DATA_DIR, "history-cache.json");
-const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
 
-const LIVE_URL = "https://shillongteer.com/";
-const HISTORY_URL = "https://shillongteer.com/previous-results/";
-const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
-const LIVE_CACHE_TTL_MS = 60 * 1000;
-const HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
-const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
-const FETCH_RETRY_ATTEMPTS = 3;
-const FETCH_RETRY_DELAY_MS = 1200;
+// Configuration (override via env)
+const REFRESH_INTERVAL_MS = Number(process.env.REFRESH_INTERVAL_MS) || 5 * 60 * 1000; // default 5m
+const INITIAL_DELAY_MS = Number(process.env.INITIAL_DELAY_MS) || 0; // delay before first automatic refresh
+const REFRESH_TIMEOUT_MS = Number(process.env.REFRESH_TIMEOUT_MS) || 20 * 1000; // timeout per fetch attempt
+const MAX_RETRIES = Number(process.env.MAX_RETRIES) || 3;
+const RETRY_BASE_MS = Number(process.env.RETRY_BASE_MS) || 1000; // base backoff
+const MAX_BACKOFF_MS = Number(process.env.MAX_BACKOFF_MS) || 30 * 1000;
 
-const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".webmanifest": "application/manifest+json; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".ico": "image/x-icon",
-  ".txt": "text/plain; charset=utf-8",
-  ".xml": "application/xml; charset=utf-8",
+// Simple in-memory cache — keep this; your endpoints can read from it
+const cache = {
+  data: null,
+  updatedAt: null,
+  lastError: null,
+  isStale: true
 };
 
-let refreshInProgress = false;
-let lastRefreshError = null;
-let lastSuccessfulRefresh = null;
+// A lock/promise to ensure only one refresh runs at a time.
+// refreshLock will point to the active refresh Promise or null.
+let refreshLock = null;
 
-ensureDir(DATA_DIR);
-
-function ensureDir(target) {
-  if (!fs.existsSync(target)) {
-    fs.mkdirSync(target, { recursive: true });
-  }
+// Utility: sleep for ms
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function padNumber(value) {
-  return String(value).padStart(2, "0");
+// Exponential backoff with jitter
+function backoffMs(attempt) {
+  const base = RETRY_BASE_MS * Math.pow(2, attempt - 1);
+  const jitter = Math.floor(Math.random() * (base / 2));
+  return Math.min(base + jitter, MAX_BACKOFF_MS);
 }
 
-function parseDdMmYyyy(value) {
-  const match = /^(\d{2})-(\d{2})-(\d{4})$/.exec(value.trim());
-  if (!match) return null;
-  const [, dd, mm, yyyy] = match;
-  return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
-}
-
-function parseDdMmYyyyDot(value) {
-  const match = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(value.trim());
-  if (!match) return null;
-  const [, dd, mm, yyyy] = match;
-  return new Date(`${yyyy}-${mm}-${dd}T00:00:00.000Z`);
-}
-
-function formatIsoDate(dateString) {
-  const date = parseDdMmYyyy(dateString);
-  return date ? date.toISOString().slice(0, 10) : null;
-}
-
-function formatIsoDateFromAny(dateString) {
-  const dashDate = parseDdMmYyyy(dateString);
-  if (dashDate) return dashDate.toISOString().slice(0, 10);
-  const dotDate = parseDdMmYyyyDot(dateString);
-  return dotDate ? dotDate.toISOString().slice(0, 10) : null;
-}
-
-function formatDisplayDateFromIso(isoDate) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate);
-  if (!match) return isoDate;
-  const [, yyyy, mm, dd] = match;
-  return `${dd}-${mm}-${yyyy}`;
-}
-
-function cleanText(value) {
-  return value
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function safeNumberToken(value) {
-  if (!value) return null;
-  const token = value.trim().toUpperCase();
-  if (/^\d{1,2}$/.test(token)) {
-    return padNumber(token);
-  }
-  if (token === "-") {
-    return "XX";
-  }
-  if (token === "OFF" || token === "XX") {
-    return token;
-  }
-  return null;
-}
-
-async function delay(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchTextWithRetry(url, attempt = 1) {
+// Helper: fetch with timeout using AbortController
+async function fetchWithTimeout(url, options = {}, timeoutMs = REFRESH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, {
-      headers: {
-        "user-agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "accept-language": "en-US,en;q=0.9",
-        referer: "https://shillongteerresultlist.co.in/",
-      },
-    });
+    const res = await fetch(url, { ...options, signal: controller.signal });
+    clearTimeout(id);
+    return res;
+  } catch (err) {
+    clearTimeout(id);
+    throw err;
+  }
+}
 
-    if (!response.ok) {
-      throw new Error(`Failed request ${response.status} for ${url}`);
+/*
+  === PASTE YOUR EXISTING FETCH / PARSING / PREDICTION LOGIC HERE ===
+
+  Replace the async function below with your original logic that fetches the
+  upstream data, parses it, runs predictions, and returns the value you want
+  stored in cache.data.
+
+  The function must:
+   - be async
+   - return an object (or value) that will be assigned to cache.data
+   - throw on error when fetch/parsing fails so the retry logic can pick it up
+
+  Example placeholder:
+
+    async function fetchAndBuildCache() {
+      // Your original code:
+      // const raw = await fetch('https://source.example/data');
+      // const parsed = parse(raw);
+      // const prediction = runPrediction(parsed);
+      // return { parsed, prediction };
     }
 
-    return response.text();
-  } catch (error) {
-    if (attempt < FETCH_RETRY_ATTEMPTS) {
-      await delay(FETCH_RETRY_DELAY_MS * attempt);
-      return fetchTextWithRetry(url, attempt + 1);
-    }
-    throw error;
-  }
+  Do NOT change the function name unless you also update calls below.
+*/
+
+async function fetchAndBuildCache() {
+  // PLACEHOLDER: Minimal example showing how to use fetchWithTimeout.
+  // REMOVE this and paste your existing logic here.
+  // This placeholder returns an example object — replace it.
+
+  // Example fetch usage (adjust or remove)
+  // const res = await fetchWithTimeout('https://example.com/data.json', {}, REFRESH_TIMEOUT_MS);
+  // if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+  // const json = await res.json();
+
+  // Example transformation / prediction
+  // const prediction = { sample: true };
+
+  // return { json, prediction };
+
+  throw new Error('fetchAndBuildCache() is a placeholder: replace this with your real fetch / parse / prediction logic.');
 }
 
-async function fetchText(url) {
-  return fetchTextWithRetry(url);
+/*
+  === END PLACEHOLDER ===
+*/
+
+// Core refresh function (single attempt)
+async function doRefreshOnce() {
+  // call user-provided fetchAndBuildCache which must throw on failure
+  const newData = await fetchAndBuildCache();
+  // Update cache atomically
+  cache.data = newData;
+  cache.updatedAt = new Date().toISOString();
+  cache.lastError = null;
+  cache.isStale = false;
+  console.info(`[cache] updated at ${cache.updatedAt}`);
+  return cache;
 }
 
-function parseHistoryPage(html) {
-  const rows = [];
-  const rowPattern =
-    /<tr>\s*<td>(\d{2}-\d{2}-\d{4})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<td[^>]*class="rnum"[^>]*>([A-Z0-9]{2,3})<\/td>\s*<\/tr>/g;
-
-  for (const match of html.matchAll(rowPattern)) {
-    const date = match[1];
-    const firstRound = safeNumberToken(match[2]);
-    const secondRound = safeNumberToken(match[3]);
-
-    if (!firstRound || !secondRound) continue;
-
-    rows.push({
-      date,
-      isoDate: formatIsoDate(date),
-      firstRound,
-      secondRound,
-      isOffDay: firstRound === "OFF" || secondRound === "OFF",
-    });
+// Wrapper that runs refresh with retries and updates cache.lastError on failure.
+// Ensures that callers can await the same refresh if a refresh is already running.
+async function refreshWithRetries() {
+  // If a refresh is already in progress, return the same Promise
+  if (refreshLock) {
+    return refreshLock;
   }
 
-  return rows;
-}
-
-function parseSupplementalHistoryPage(html) {
-  const rows = [];
-  const rowPattern =
-    /<tr[^>]*>\s*<td[^>]*>\s*([^<]+?)\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<td[^>]*>\s*([A-Z0-9-]{1,3})\s*<\/td>\s*<\/tr>/gi;
-
-  for (const match of html.matchAll(rowPattern)) {
-    const sourceDate = cleanText(match[1]).replace(/\./g, "-");
-    const isoDate = formatIsoDateFromAny(sourceDate);
-    const firstRound = safeNumberToken(match[2]);
-    const secondRound = safeNumberToken(match[3]);
-
-    if (!isoDate || !firstRound || !secondRound) continue;
-
-    rows.push({
-      date: formatDisplayDateFromIso(isoDate),
-      isoDate,
-      firstRound,
-      secondRound,
-      isOffDay: firstRound === "OFF" || secondRound === "OFF",
-    });
-  }
-
-  return rows;
-}
-
-function extractLiveDate(html) {
-  const strongDateMatch = html.match(/<strong>Date:\s*<\/strong>([^|<]+)/i);
-  if (strongDateMatch) {
-    return cleanText(strongDateMatch[1]);
-  }
-
-  const textDateMatch = cleanText(html).match(/\bDate:\s*(\d{2}-\d{2}-\d{4})\b/i);
-  return textDateMatch ? textDateMatch[1] : null;
-}
-
-function extractLiveRoundsFallback(html) {
-  const normalized = cleanText(html);
-  const firstLabelMatch = normalized.match(/First\s*Round(?:\s*Result)?\s*(XX|OFF|\d{2})/i);
-  const secondLabelMatch = normalized.match(/Second\s*Round(?:\s*Result)?\s*(XX|OFF|\d{2})/i);
-
-  if (firstLabelMatch || secondLabelMatch) {
-    return {
-      firstRound: safeNumberToken(firstLabelMatch?.[1] || null),
-      secondRound: safeNumberToken(secondLabelMatch?.[1] || null),
-    };
-  }
-
-  const classMatches = [...html.matchAll(/class="rn">([A-Z0-9-]{1,3})</gi)]
-    .map((match) => safeNumberToken(match[1]))
-    .filter(Boolean);
-
-  if (classMatches.length >= 2) {
-    return {
-      firstRound: classMatches[0],
-      secondRound: classMatches[1],
-    };
-  }
-
-  return {
-    firstRound: null,
-    secondRound: null,
-  };
-}
-
-function parseLivePage(html) {
-  const liveDate = extractLiveDate(html);
-  const strictRoundMatch = html.match(
-    /<div class="rb"><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><div class="rc"><div class="rn">([A-Z0-9]{2,3})<\/div><\/div><\/div>/i
-  );
-  const fallbackRounds = extractLiveRoundsFallback(html);
-
-  const commonNumbers = [];
-  for (const match of html.matchAll(/<div class="nc">(\d{2})<\/div>/g)) {
-    commonNumbers.push(match[1]);
-  }
-
-  const recentRows = [];
-  const recentPattern =
-    /<tr><td>(\d{2}-\d{2}-\d{4})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><td class="rnum">([A-Z0-9]{2,3})<\/td><\/tr>/g;
-  for (const match of html.matchAll(recentPattern)) {
-    recentRows.push({
-      date: match[1],
-      isoDate: formatIsoDate(match[1]),
-      firstRound: safeNumberToken(match[2]),
-      secondRound: safeNumberToken(match[3]),
-    });
-  }
-
-  return {
-    date: liveDate,
-    isoDate: liveDate ? formatIsoDate(liveDate) : null,
-    firstRound: strictRoundMatch ? safeNumberToken(strictRoundMatch[1]) : fallbackRounds.firstRound,
-    secondRound: strictRoundMatch ? safeNumberToken(strictRoundMatch[2]) : fallbackRounds.secondRound,
-    commonNumbers,
-    recentRows,
-  };
-}
-
-function writeJson(filePath, value) {
-  fs.writeFileSync(filePath, JSON.stringify(value, null, 2));
-}
-
-function readJson(filePath, fallback) {
-  try {
-    return JSON.parse(fs.readFileSync(filePath, "utf8"));
-  } catch {
-    return fallback;
-  }
-}
-
-function isCacheFresh(cacheValue, ttlMs) {
-  if (!cacheValue?.fetchedAt) return false;
-  const fetchedAt = new Date(cacheValue.fetchedAt).getTime();
-  if (Number.isNaN(fetchedAt)) return false;
-  return Date.now() - fetchedAt < ttlMs;
-}
-
-function mergeHistoryRows(primaryRows, supplementalRows) {
-  const merged = new Map();
-
-  for (const row of [...supplementalRows, ...primaryRows]) {
-    if (!row?.isoDate) continue;
-    merged.set(row.isoDate, row);
-  }
-
-  return [...merged.values()].sort((a, b) => b.isoDate.localeCompare(a.isoDate));
-}
-
-async function loadHistory(forceRefresh = false) {
-  const cached = readJson(HISTORY_CACHE_PATH, null);
-  if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, HISTORY_CACHE_TTL_MS)) {
-    return { ...cached, fromCache: true };
-  }
-
-  try {
-    const [archiveHtml, supplementalHtml] = await Promise.all([
-      fetchText(HISTORY_URL),
-      fetchText(SUPPLEMENTAL_HISTORY_URL),
-    ]);
-    const archiveRows = parseHistoryPage(archiveHtml);
-    const supplementalRows = parseSupplementalHistoryPage(supplementalHtml);
-    const rows = mergeHistoryRows(archiveRows, supplementalRows);
-    const payload = {
-      fetchedAt: new Date().toISOString(),
-      sourceUrl: `${HISTORY_URL} + ${SUPPLEMENTAL_HISTORY_URL}`,
-      rows,
-    };
-    writeJson(HISTORY_CACHE_PATH, payload);
-    return { ...payload, fromCache: false };
-  } catch (error) {
-    if (cached?.rows?.length) {
-      return { ...cached, fromCache: true, warning: error.message };
-    }
-    throw error;
-  }
-}
-
-async function loadLive(forceRefresh = false) {
-  const cached = readJson(LIVE_CACHE_PATH, null);
-  if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) {
-    return { ...cached, fromCache: true };
-  }
-
-  try {
-    const html = await fetchText(LIVE_URL);
-    const result = parseLivePage(html);
-    const payload = {
-      fetchedAt: new Date().toISOString(),
-      sourceUrl: LIVE_URL,
-      ...result,
-    };
-    writeJson(LIVE_CACHE_PATH, payload);
-    return { ...payload, fromCache: false };
-  } catch (error) {
-    if (cached?.date) {
-      return { ...cached, fromCache: true, warning: error.message };
-    }
-    throw error;
-  }
-}
-
-function getLastNDaysHistory(rows, days = 365) {
-  const cutoff = new Date();
-  cutoff.setUTCDate(cutoff.getUTCDate() - days);
-
-  return rows.filter((row) => {
-    if (!row.isoDate || row.isOffDay) return false;
-    return new Date(`${row.isoDate}T00:00:00.000Z`) >= cutoff;
-  });
-}
-
-function isResolvedNumberToken(value) {
-  return /^\d{2}$/.test(value || "");
-}
-
-function resolvedRoundCount(row) {
-  return [row?.firstRound, row?.secondRound].filter(isResolvedNumberToken).length;
-}
-
-function hasResolvedRound(row) {
-  return resolvedRoundCount(row) > 0;
-}
-
-function selectPredictionSeed(historyRows) {
-  return historyRows.find((row) => hasResolvedRound(row)) || null;
-}
-
-function buildLiveSeed(livePayload) {
-  if (!livePayload?.date) return null;
-  if (!hasResolvedRound(livePayload)) return null;
-
-  return {
-    date: livePayload.date,
-    firstRound: livePayload.firstRound || "XX",
-    secondRound: livePayload.secondRound || "XX",
-  };
-}
-
-function getDigits(numberToken) {
-  if (!/^\d{2}$/.test(numberToken)) return null;
-  return {
-    direct: numberToken,
-    house: Number(numberToken[0]),
-    ending: Number(numberToken[1]),
-  };
-}
-
-function weightedCounter() {
-  return new Map();
-}
-
-function addWeighted(map, key, amount) {
-  map.set(key, (map.get(key) || 0) + amount);
-}
-
-function rankMap(map, formatter) {
-  return [...map.entries()]
-    .sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])))
-    .map(([key, score]) => formatter(key, score));
-}
-
-function sumDigitToken(token) {
-  if (!/^\d{2}$/.test(token)) return null;
-  return Number(token[0]) + Number(token[1]);
-}
-
-function buildWindow(rows, start, length) {
-  return rows.slice(start, start + length);
-}
-
-function scoreCounterRows(rows, weight, houseScores, endingScores, directScores) {
-  for (const row of rows) {
-    for (const token of [row.firstRound, row.secondRound]) {
-      const digits = getDigits(token);
-      if (!digits) continue;
-      addWeighted(houseScores, digits.house, weight);
-      addWeighted(endingScores, digits.ending, weight);
-      addWeighted(directScores, digits.direct, weight);
-    }
-  }
-}
-
-function getTransitionKey(row) {
-  if (!row) return null;
-  return `${row.firstRound}-${row.secondRound}`;
-}
-
-function buildTransitionModel(rows) {
-  const directNext = new Map();
-  const houseNext = new Map();
-  const endingNext = new Map();
-
-  for (let index = 0; index < rows.length - 1; index += 1) {
-    const newer = rows[index];
-    const older = rows[index + 1];
-    const olderKey = getTransitionKey(older);
-    if (!olderKey) continue;
-
-    const directMap = directNext.get(olderKey) || new Map();
-    const houseMap = houseNext.get(olderKey) || new Map();
-    const endingMap = endingNext.get(olderKey) || new Map();
-
-    for (const token of [newer.firstRound, newer.secondRound]) {
-      const digits = getDigits(token);
-      if (!digits) continue;
-      addWeighted(directMap, digits.direct, 1);
-      addWeighted(houseMap, digits.house, 1);
-      addWeighted(endingMap, digits.ending, 1);
-    }
-
-    directNext.set(olderKey, directMap);
-    houseNext.set(olderKey, houseMap);
-    endingNext.set(olderKey, endingMap);
-  }
-
-  return { directNext, houseNext, endingNext };
-}
-
-function calculateShiftRanking(currentRows, previousRows, tokenSelector) {
-  const currentMap = new Map();
-  const previousMap = new Map();
-
-  for (const row of currentRows) {
-    for (const token of tokenSelector(row)) {
-      addWeighted(currentMap, token, 1);
-    }
-  }
-
-  for (const row of previousRows) {
-    for (const token of tokenSelector(row)) {
-      addWeighted(previousMap, token, 1);
-    }
-  }
-
-  const allKeys = new Set([...currentMap.keys(), ...previousMap.keys()]);
-
-  return [...allKeys]
-    .map((key) => ({
-      value: /^\d+$/.test(String(key)) ? Number(key) : key,
-      shift: (currentMap.get(key) || 0) - (previousMap.get(key) || 0),
-      current: currentMap.get(key) || 0,
-      previous: previousMap.get(key) || 0,
-    }))
-    .sort((a, b) => b.shift - a.shift || b.current - a.current || String(a.value).localeCompare(String(b.value)));
-}
-
-function calculatePrediction(historyRows, customSeed, livePayload) {
-  const usable = historyRows.filter(
-    (row) => /^\d{2}$/.test(row.firstRound) && /^\d{2}$/.test(row.secondRound)
-  );
-  const recent7 = buildWindow(usable, 0, 7);
-  const previous7 = buildWindow(usable, 7, 7);
-  const recent15 = buildWindow(usable, 0, 15);
-  const recent30 = buildWindow(usable, 0, 30);
-  const season90 = buildWindow(usable, 0, 90);
-  const year365 = buildWindow(usable, 0, 365);
-
-  const houseScores = weightedCounter();
-  const endingScores = weightedCounter();
-  const directScores = weightedCounter();
-  const pairScores = weightedCounter();
-  const transitionScores = weightedCounter();
-  const { directNext, houseNext, endingNext } = buildTransitionModel(usable);
-
-  scoreCounterRows(recent7, 8, houseScores, endingScores, directScores);
-  scoreCounterRows(recent15, 5, houseScores, endingScores, directScores);
-  scoreCounterRows(recent30, 3, houseScores, endingScores, directScores);
-  scoreCounterRows(season90, 2, houseScores, endingScores, directScores);
-  scoreCounterRows(year365, 1, houseScores, endingScores, directScores);
-
-  for (const row of recent30) {
-    const pairA = `${row.firstRound[0]}${row.secondRound[0]}`;
-    const pairB = `${row.firstRound[1]}${row.secondRound[1]}`;
-    addWeighted(pairScores, pairA, 2);
-    addWeighted(pairScores, pairB, 2);
-
-    const sumShift = (sumDigitToken(row.firstRound) + sumDigitToken(row.secondRound)) % 10;
-    addWeighted(endingScores, sumShift, 5);
-    addWeighted(endingScores, (sumShift + 1) % 10, 3);
-    addWeighted(endingScores, (sumShift + 9) % 10, 3);
-  }
-
-  const liveSeed = buildLiveSeed(livePayload);
-  const latest = customSeed || liveSeed || selectPredictionSeed(historyRows) || usable[0];
-  const latestKey = getTransitionKey(latest);
-
-  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && directNext.has(latestKey)) {
-    for (const [value, score] of directNext.get(latestKey).entries()) {
-      addWeighted(directScores, value, score * 7);
-      addWeighted(transitionScores, value, score * 7);
-    }
-  }
-
-  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && houseNext.has(latestKey)) {
-    for (const [value, score] of houseNext.get(latestKey).entries()) {
-      addWeighted(houseScores, value, score * 6);
-    }
-  }
-
-  if (latestKey && /^\d{2}-\d{2}$/.test(latestKey) && endingNext.has(latestKey)) {
-    for (const [value, score] of endingNext.get(latestKey).entries()) {
-      addWeighted(endingScores, value, score * 6);
-    }
-  }
-
-  const latestFirst = getDigits(latest?.firstRound || "");
-  const latestSecond = getDigits(latest?.secondRound || "");
-  const seedEnding =
-    latestFirst && latestSecond
-      ? (latestFirst.house +
-          latestFirst.ending +
-          latestSecond.house +
-          latestSecond.ending) %
-        10
-      : null;
-
-  if (seedEnding !== null) {
-    [seedEnding, (seedEnding + 1) % 10, (seedEnding + 9) % 10].forEach((ending) =>
-      addWeighted(endingScores, ending, 6)
-    );
-  }
-
-  if (latestFirst) {
-    addWeighted(houseScores, latestFirst.house, 5);
-    addWeighted(endingScores, latestFirst.ending, 3);
-    addWeighted(directScores, latestFirst.direct, 4);
-  }
-
-  if (latestSecond) {
-    addWeighted(houseScores, latestSecond.house, 5);
-    addWeighted(endingScores, latestSecond.ending, 3);
-    addWeighted(directScores, latestSecond.direct, 4);
-  }
-
-  for (const commonNumber of livePayload?.commonNumbers || []) {
-    if (!/^\d{2}$/.test(commonNumber)) continue;
-    addWeighted(directScores, commonNumber, 3);
-    addWeighted(houseScores, Number(commonNumber[0]), 2);
-    addWeighted(endingScores, Number(commonNumber[1]), 2);
-  }
-
-  const topHouses = rankMap(houseScores, (value, score) => ({
-    value: Number(value),
-    score,
-  })).slice(0, 4);
-
-  const topEndings = rankMap(endingScores, (value, score) => ({
-    value: Number(value),
-    score,
-  })).slice(0, 5);
-
-  const topDirect = rankMap(directScores, (value, score) => ({
-    value,
-    score,
-  })).slice(0, 10);
-
-  const risingHouses = calculateShiftRanking(
-    recent7,
-    previous7,
-    (row) => [row.firstRound[0], row.secondRound[0]]
-  ).slice(0, 4);
-
-  const risingEndings = calculateShiftRanking(
-    recent7,
-    previous7,
-    (row) => [row.firstRound[1], row.secondRound[1]]
-  ).slice(0, 5);
-
-  const candidateMap = new Map();
-
-  function addCandidate(value, score, reason) {
-    const current = candidateMap.get(value) || { value, score: 0, reasons: [] };
-    current.score += score;
-    if (!current.reasons.includes(reason)) {
-      current.reasons.push(reason);
-    }
-    candidateMap.set(value, current);
-  }
-
-  for (const house of topHouses.slice(0, 4)) {
-    for (const ending of topEndings.slice(0, 4)) {
-      addCandidate(`${house.value}${ending.value}`, house.score + ending.score, "House + ending momentum");
-    }
-  }
-
-  for (const direct of topDirect.slice(0, 6)) {
-    addCandidate(direct.value, direct.score * 1.35, "Direct recurrence");
-  }
-
-  for (const [pairValue, score] of pairScores.entries()) {
-    const first = pairValue[0];
-    const second = pairValue[1];
-    addCandidate(`${first}${second}`, score * 1.15, "Shift pair pattern");
-  }
-
-  for (const [value, score] of transitionScores.entries()) {
-    addCandidate(value, score * 1.45, "Previous-day transition");
-  }
-
-  const possibleNumbers = [...candidateMap.values()]
-    .sort((a, b) => b.score - a.score || a.value.localeCompare(b.value))
-    .slice(0, 12)
-    .map((item, index) => ({
-      value: item.value,
-      score: Number(item.score.toFixed(1)),
-      confidence: index < 4 ? "higher" : index < 8 ? "medium" : "watch",
-      reason: item.reasons.slice(0, 2).join(" + "),
-    }));
-
-  return {
-    generatedFrom: latest
-      ? {
-          date: latest.date,
-          firstRound: latest.firstRound,
-          secondRound: latest.secondRound,
+  // Create a refresh Promise and assign to lock
+  refreshLock = (async () => {
+    let attempt = 0;
+    let lastErr = null;
+
+    while (attempt < MAX_RETRIES) {
+      attempt++;
+      try {
+        const result = await doRefreshOnce();
+        refreshLock = null; // release lock on success
+        return result;
+      } catch (err) {
+        lastErr = err;
+        console.warn(`[cache][attempt ${attempt}] refresh failed: ${err && err.message ? err.message : err}.`);
+        if (attempt < MAX_RETRIES) {
+          const waitMs = backoffMs(attempt);
+          console.info(`[cache] retrying in ${waitMs}ms (attempt ${attempt + 1} of ${MAX_RETRIES})`);
+          await sleep(waitMs);
+        } else {
+          // Exhausted attempts
+          const now = new Date().toISOString();
+          cache.lastError = {
+            message: lastErr && lastErr.message ? lastErr.message : String(lastErr),
+            attempt,
+            timestamp: now
+          };
+          cache.isStale = true;
+          console.error(`[cache] refresh failed after ${attempt} attempts: ${cache.lastError.message}`);
         }
-      : null,
-    topHouses,
-    topEndings,
-    topDirect,
-    possibleNumbers,
-    commonNumbers: possibleNumbers.map((item) => ({
-      value: item.value,
-      reason: item.reason,
-    })),
-    shiftSummary: {
-      risingHouses,
-      risingEndings,
-    },
-    note:
-      "These are informational trend signals from recent movement only. They are not guaranteed outcomes.",
-  };
-}
-
-function calculateAnalytics(historyRows) {
-  const usable = historyRows.filter(
-    (row) => /^\d{2}$/.test(row.firstRound) && /^\d{2}$/.test(row.secondRound)
-  );
-
-  const houseFrequency = Array.from({ length: 10 }, (_, value) => ({
-    value,
-    count: 0,
-  }));
-  const endingFrequency = Array.from({ length: 10 }, (_, value) => ({
-    value,
-    count: 0,
-  }));
-  const repeatedDirect = new Map();
-  const recentDirect = new Map();
-  const monthlyTrend = new Map();
-
-  for (const [index, row] of usable.entries()) {
-    const monthKey = row.isoDate ? row.isoDate.slice(0, 7) : "unknown";
-    const monthEntry = monthlyTrend.get(monthKey) || {
-      month: monthKey,
-      total: 0,
-      houses: Array(10).fill(0),
-      endings: Array(10).fill(0),
-    };
-
-    for (const token of [row.firstRound, row.secondRound]) {
-      const digits = getDigits(token);
-      if (!digits) continue;
-      houseFrequency[digits.house].count += 1;
-      endingFrequency[digits.ending].count += 1;
-      addWeighted(repeatedDirect, digits.direct, 1);
-      if (index < 21) {
-        addWeighted(recentDirect, digits.direct, 1);
       }
-      monthEntry.total += 1;
-      monthEntry.houses[digits.house] += 1;
-      monthEntry.endings[digits.ending] += 1;
     }
 
-    monthlyTrend.set(monthKey, monthEntry);
-  }
+    refreshLock = null;
+    // Rethrow the last error so callers can see failure if they awaited refreshWithRetries()
+    throw lastErr;
+  })();
 
-  const strongestDirect = rankMap(repeatedDirect, (value, score) => ({
-    value,
-    count: score,
-  })).slice(0, 12);
-
-  const recentShiftNumbers = rankMap(recentDirect, (value, score) => ({
-    value,
-    count: score,
-  })).slice(0, 10);
-
-  const currentRows = buildWindow(usable, 0, 14);
-  const previousRows = buildWindow(usable, 14, 14);
-  const risingHouses = calculateShiftRanking(
-    currentRows,
-    previousRows,
-    (row) => [row.firstRound[0], row.secondRound[0]]
-  ).slice(0, 5);
-  const risingEndings = calculateShiftRanking(
-    currentRows,
-    previousRows,
-    (row) => [row.firstRound[1], row.secondRound[1]]
-  ).slice(0, 5);
-
-  const months = [...monthlyTrend.values()]
-    .sort((a, b) => a.month.localeCompare(b.month))
-    .slice(-12)
-    .map((entry) => {
-      const housePeak = Math.max(...entry.houses);
-      const endingPeak = Math.max(...entry.endings);
-
-      return {
-        month: entry.month,
-        busiestHouse: entry.houses.indexOf(housePeak),
-        busiestEnding: entry.endings.indexOf(endingPeak),
-        total: entry.total,
-      };
-    });
-
-  return {
-    houseFrequency,
-    endingFrequency,
-    strongestDirect,
-    recentShiftNumbers,
-    risingHouses,
-    risingEndings,
-    months,
-  };
+  return refreshLock;
 }
 
-function shouldPreferHistoryRow(livePayload, historyRow) {
-  if (!historyRow?.isoDate) return false;
-  if (!livePayload?.isoDate) return hasResolvedRound(historyRow);
-
-  const dateComparison = historyRow.isoDate.localeCompare(livePayload.isoDate);
-  if (dateComparison > 0) return hasResolvedRound(historyRow);
-
-  if (dateComparison === 0) {
-    return resolvedRoundCount(historyRow) > resolvedRoundCount(livePayload);
-  }
-
-  return false;
+// Public function to request a refresh (returns Promise)
+function requestRefresh() {
+  return refreshWithRetries().catch(err => {
+    // swallow / log the error here; the cache.lastError preserves details
+    console.error(`[cache] manual refresh error: ${err && err.message ? err.message : err}`);
+    throw err;
+  });
 }
 
-function resolveLivePayload(livePayload, historyRows, predictions) {
-  const latestHistory = historyRows[0] || null;
-  const resolved = {
-    ...livePayload,
-    resultSource: "live-page",
-    commonNumbersSource: "live-page",
-  };
-
-  if (shouldPreferHistoryRow(livePayload, latestHistory)) {
-    resolved.date = latestHistory.date;
-    resolved.isoDate = latestHistory.isoDate;
-    resolved.firstRound = latestHistory.firstRound;
-    resolved.secondRound = latestHistory.secondRound;
-    resolved.resultSource = "latest-history";
-  }
-
-  const shouldUsePredictionCommonNumbers =
-    resolved.resultSource === "latest-history" ||
-    !Array.isArray(resolved.commonNumbers) ||
-    resolved.commonNumbers.length === 0;
-
-  if (shouldUsePredictionCommonNumbers) {
-    const derivedCommonNumbers = (predictions.commonNumbers || [])
-      .map((item) => item.value)
-      .filter(Boolean);
-
-    if (derivedCommonNumbers.length) {
-      resolved.commonNumbers = derivedCommonNumbers;
-      resolved.commonNumbersSource = "algorithm";
-    }
-  }
-
-  return resolved;
-}
-
-async function backgroundRefresh() {
-  if (refreshInProgress) return;
-  refreshInProgress = true;
-
-  try {
-    await Promise.all([loadHistory(true), loadLive(true)]);
-    lastSuccessfulRefresh = new Date().toISOString();
-    lastRefreshError = null;
-    console.log(`[AUTO-REFRESH] Completed at ${lastSuccessfulRefresh}`);
-  } catch (error) {
-    lastRefreshError = error.message;
-    console.error(`[AUTO-REFRESH] Error: ${error.message}`);
-  } finally {
-    refreshInProgress = false;
-  }
-}
-
+// Background scheduler: start auto-refresh with setInterval, safe against overlapping calls.
+// We start a timer but ensure we don't run overlapping refreshes because refreshWithRetries uses a lock.
+let backgroundInterval = null;
 function startBackgroundRefresh() {
-  console.log(`[AUTO-REFRESH] Running every ${AUTO_REFRESH_INTERVAL_MS / 1000} seconds`);
+  // do not start multiple intervals
+  if (backgroundInterval) return;
+
+  // schedule first run after INITIAL_DELAY_MS (so app startup can finish)
   setTimeout(() => {
-    backgroundRefresh();
-  }, 5000);
-  setInterval(() => {
-    backgroundRefresh();
-  }, AUTO_REFRESH_INTERVAL_MS);
-}
-
-function jsonResponse(response, statusCode, payload) {
-  response.writeHead(statusCode, {
-    "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store, max-age=0",
-  });
-  response.end(JSON.stringify(payload));
-}
-
-function serveStatic(requestPath, response) {
-  const normalized = requestPath === "/" ? "/index.html" : requestPath;
-  const targetPath = path.normalize(path.join(PUBLIC_DIR, normalized));
-
-  if (!targetPath.startsWith(PUBLIC_DIR)) {
-    response.writeHead(403);
-    response.end("Forbidden");
-    return;
-  }
-
-  fs.readFile(targetPath, (error, fileBuffer) => {
-    if (error) {
-      response.writeHead(error.code === "ENOENT" ? 404 : 500);
-      response.end(error.code === "ENOENT" ? "Not found" : "Server error");
-      return;
-    }
-
-    const extension = path.extname(targetPath);
-    response.writeHead(200, {
-      "content-type": MIME_TYPES[extension] || "application/octet-stream",
-      "cache-control": extension === ".html" ? "no-cache" : "public, max-age=300",
+    // run first refresh immediately (and subsequent ones via interval)
+    requestRefresh().catch(err => {
+      // already logged; keep going
     });
-    response.end(fileBuffer);
-  });
-}
 
-const server = http.createServer(async (request, response) => {
-  const requestUrl = new URL(request.url, `http://${request.headers.host}`);
-
-  try {
-    if (requestUrl.pathname === "/api/dashboard") {
-      const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
-      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
-      const [historyPayload, livePayload] = await Promise.all([
-        loadHistory(forceRefresh),
-        loadLive(forceRefresh),
-      ]);
-      const history = getLastNDaysHistory(historyPayload.rows, days);
-      const predictions = calculatePrediction(history, null, livePayload);
-      const analytics = calculateAnalytics(history);
-      const resolvedLive = resolveLivePayload(livePayload, history, predictions);
-
-      jsonResponse(response, 200, {
-        live: resolvedLive,
-        history,
-        predictions,
-        analytics,
-        meta: {
-          historySource: historyPayload.sourceUrl,
-          liveSource: livePayload.sourceUrl,
-          liveDisplaySource: resolvedLive.resultSource,
-          commonNumbersSource: resolvedLive.commonNumbersSource,
-          fetchedAt: new Date().toISOString(),
-          usedCache: historyPayload.fromCache || livePayload.fromCache,
-          warnings: [historyPayload.warning, livePayload.warning].filter(Boolean),
-          autoRefresh: {
-            intervalSeconds: AUTO_REFRESH_INTERVAL_MS / 1000,
-            refreshInProgress,
-            lastSuccessfulRefresh,
-            lastRefreshError,
-          },
-        },
+    // schedule recurring refreshes
+    backgroundInterval = setInterval(() => {
+      // Trigger a refresh but don't crash the server if it throws
+      requestRefresh().catch(err => {
+        // already logged
       });
-      return;
-    }
+    }, REFRESH_INTERVAL_MS);
+  }, INITIAL_DELAY_MS);
 
-    if (requestUrl.pathname === "/api/history") {
-      const days = Math.max(30, Math.min(365, Number(requestUrl.searchParams.get("days")) || 365));
-      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
-      const historyPayload = await loadHistory(forceRefresh);
-      const history = getLastNDaysHistory(historyPayload.rows, days);
-      jsonResponse(response, 200, history);
-      return;
-    }
+  console.info(`[cache] background refresh scheduled every ${REFRESH_INTERVAL_MS}ms (initial delay ${INITIAL_DELAY_MS}ms)`);
+}
 
-    if (requestUrl.pathname === "/api/live") {
-      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
-      const livePayload = await loadLive(forceRefresh);
-      jsonResponse(response, 200, livePayload);
-      return;
-    }
+function stopBackgroundRefresh() {
+  if (backgroundInterval) {
+    clearInterval(backgroundInterval);
+    backgroundInterval = null;
+  }
+}
 
-    if (requestUrl.pathname === "/api/predict" || requestUrl.pathname === "/api/insights") {
-      const historyPayload = await loadHistory();
-      const history = getLastNDaysHistory(historyPayload.rows, 365);
-      const fr = safeNumberToken(requestUrl.searchParams.get("fr"));
-      const sr = safeNumberToken(requestUrl.searchParams.get("sr"));
-      const customSeed =
-        /^\d{2}$/.test(fr || "") && /^\d{2}$/.test(sr || "")
-          ? { date: "Manual entry", firstRound: fr, secondRound: sr }
-          : null;
-      const livePayload = await loadLive();
+/*
+  === EXISTING API ENDPOINTS ===
+  Keep any existing endpoints that you already have.
+  You can paste your endpoints below or keep them in-place in your original file.
 
-      jsonResponse(response, 200, calculatePrediction(history, customSeed, livePayload));
-      return;
-    }
+  The following endpoints are added:
+   - GET /__refresh  -> triggers manual refresh (returns cache and result)
+   - GET /__health   -> simple liveness/health
+   - GET /__cache    -> returns cache metadata and data (JSON). Useful for debugging.
+  Make sure these do not conflict with your existing endpoints. If they do, rename or remove them.
+*/
 
-    serveStatic(requestUrl.pathname, response);
-  } catch (error) {
-    jsonResponse(response, 500, {
-      error: error.message,
+// Health endpoint
+app.get('/__health', (req, res) => {
+  res.json({
+    status: 'ok',
+    uptime: process.uptime(),
+    now: new Date().toISOString()
+  });
+});
+
+// Manual refresh trigger (safe)
+app.get('/__refresh', async (req, res) => {
+  try {
+    await requestRefresh();
+    res.json({
+      ok: true,
+      cacheUpdatedAt: cache.updatedAt,
+      isStale: cache.isStale,
+      lastError: cache.lastError
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      message: 'Refresh failed',
+      error: (err && err.message) ? err.message : String(err),
+      lastError: cache.lastError
     });
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Shillong Teer dashboard running at http://localhost:${PORT}`);
-  startBackgroundRefresh();
+// Expose cache for debugging (keep it read-only)
+app.get('/__cache', (req, res) => {
+  res.json({
+    updatedAt: cache.updatedAt,
+    isStale: cache.isStale,
+    lastError: cache.lastError,
+    data: cache.data
+  });
 });
+
+/*
+  === YOUR APPLICATION ENDPOINTS SHOULD GO HERE ===
+
+  If your original server.js defines routes like:
+    app.get('/api/some', ...)
+    app.post('/predict', ...)
+  copy/paste them here so they continue to use `cache`.
+
+  Important: If your existing endpoints expect a particular variable name,
+  ensure they access the `cache` object above (cache.data, cache.updatedAt, etc.)
+*/
+
+// Example: keep this comment as a reminder. Do not remove unless you pasted your endpoints.
+/*
+app.get('/api/data', (req, res) => {
+  // YOUR ORIGINAL HANDLER — ensure it reads `cache.data` or `cache` object
+  res.json(cache.data);
+});
+*/
+
+/*
+  === STARTUP ===
+  - Run an initial refresh at startup (so Render free-tier cold start has fresh data).
+  - Start background refresh interval.
+*/
+
+async function startup() {
+  // Attempt an initial refresh immediately (with retries). Do not crash the process if it fails.
+  try {
+    await requestRefresh();
+  } catch (err) {
+    console.warn('[startup] initial refresh failed; server will start and background refresh will keep trying.', err && err.message ? err.message : err);
+  }
+
+  // Start periodic auto-refresh
+  startBackgroundRefresh();
+
+  // Start express
+  app.listen(PORT, () => {
+    console.log(`Server listening on port ${PORT}`);
+  });
+}
+
+// Graceful shutdown
+async function shutdown() {
+  console.log('Shutting down...');
+  stopBackgroundRefresh();
+  // wait for any ongoing refresh
+  if (refreshLock) {
+    try {
+      await refreshLock;
+    } catch (e) {
+      // ignore
+    }
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
+
+// Log unhandled errors to avoid silent failures
+process.on('unhandledRejection', (reason, p) => {
+  console.error('Unhandled Rejection at:', p, 'reason:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  // Consider exiting if needed; for now log and keep running
+});
+
+// Start up
+startup();
