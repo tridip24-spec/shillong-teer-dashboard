@@ -6,16 +6,9 @@ const { URL } = require("url");
 const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = path.join(__dirname, "data");
-const HISTORY_CACHE_PATH = path.join(DATA_DIR, "history-cache.json");
 const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
 
 const LIVE_URL = "https://shillongteer.com/";
-const HISTORY_URL = "https://shillongteer.com/previous-results/";
-const SUPPLEMENTAL_HISTORY_URL = "https://shillongteerresultlist.co.in/";
-
-const LIVE_CACHE_TTL_MS = 60 * 1000;
-const HISTORY_CACHE_TTL_MS = 10 * 60 * 1000;
-const AUTO_REFRESH_INTERVAL_MS = 60 * 1000;
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -28,11 +21,10 @@ const MIME_TYPES = {
   ".ico": "image/x-icon",
 };
 
-ensureDir(DATA_DIR);
-
 function ensureDir(target) {
   if (!fs.existsSync(target)) fs.mkdirSync(target, { recursive: true });
 }
+ensureDir(DATA_DIR);
 
 function cleanText(value) {
   return value.replace(/<[^>]+>/g, " ")
@@ -62,7 +54,6 @@ async function fetchText(url) {
   return response.text();
 }
 
-// --- Live scraping ---
 function extractLiveRoundsFallback(html) {
   const normalized = cleanText(html);
   const firstLabelMatch = normalized.match(/(First\s*Round|FR)[^0-9]*(XX|OFF|\d{2})/i);
@@ -101,7 +92,7 @@ function isCacheFresh(cacheValue, ttlMs) {
 
 async function loadLive(forceRefresh = false) {
   const cached = readJson(LIVE_CACHE_PATH, null);
-  if (!forceRefresh && cached?.date && isCacheFresh(cached, LIVE_CACHE_TTL_MS)) {
+  if (!forceRefresh && cached?.date && isCacheFresh(cached, 60000)) {
     return { ...cached, fromCache: true };
   }
   try {
@@ -116,7 +107,6 @@ async function loadLive(forceRefresh = false) {
   }
 }
 
-// --- JSON response helper ---
 function jsonResponse(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
@@ -125,7 +115,6 @@ function jsonResponse(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
-// --- static file serving ---
 function serveStatic(requestPath, response) {
   const normalized = requestPath === "/" ? "/index.html" : requestPath;
   const targetPath = path.normalize(path.join(PUBLIC_DIR, normalized));
@@ -147,7 +136,6 @@ function serveStatic(requestPath, response) {
   });
 }
 
-// --- main server ---
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   try {
@@ -157,7 +145,6 @@ const server = http.createServer(async (request, response) => {
       jsonResponse(response, 200, livePayload);
       return;
     }
-    // add /api/history and /api/dashboard handlers here if needed
     serveStatic(requestUrl.pathname, response);
   } catch (err) {
     response.writeHead(500, { "content-type": "application/json" });
@@ -165,7 +152,6 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-// --- start server ---
 server.listen(PORT, () => {
   console.log(`Server running at http://localhost:${PORT}`);
 });
