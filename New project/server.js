@@ -7,8 +7,10 @@ const PORT = process.env.PORT || 3000;
 const PUBLIC_DIR = path.join(__dirname, "public");
 const DATA_DIR = path.join(__dirname, "data");
 const LIVE_CACHE_PATH = path.join(DATA_DIR, "live-cache.json");
+const HISTORY_CACHE_PATH = path.join(DATA_DIR, "history-cache.json");
 
 const LIVE_URL = "https://shillongteer.com/";
+const HISTORY_URL = "https://shillongteer.com/previous-results/";
 
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
@@ -47,13 +49,13 @@ async function fetchText(url) {
     headers: {
       "user-agent": "Mozilla/5.0",
       "accept-language": "en-US,en;q=0.9",
-      referer: "https://shillongteerresultlist.co.in/",
     },
   });
   if (!response.ok) throw new Error(`Failed request ${response.status} for ${url}`);
   return response.text();
 }
 
+// --- Live scraping ---
 function extractLiveRoundsFallback(html) {
   const normalized = cleanText(html);
   const firstLabelMatch = normalized.match(/(First\s*Round|FR)[^0-9]*(XX|OFF|\d{2})/i);
@@ -107,6 +109,28 @@ async function loadLive(forceRefresh = false) {
   }
 }
 
+async function loadHistory(forceRefresh = false) {
+  const cached = readJson(HISTORY_CACHE_PATH, null);
+  if (!forceRefresh && cached?.rows?.length && isCacheFresh(cached, 600000)) {
+    return { ...cached, fromCache: true };
+  }
+  try {
+    const html = await fetchText(HISTORY_URL);
+    // Simplified: just extract rows with regex
+    const rows = [];
+    for (const match of html.matchAll(/<tr><td>(\d{2}-\d{2}-\d{4})<\/td><td[^>]*>([0-9A-Z]{2,3})<\/td><td[^>]*>([0-9A-Z]{2,3})<\/td><\/tr>/g)) {
+      rows.push({ date: match[1], firstRound: safeNumberToken(match[2]), secondRound: safeNumberToken(match[3]) });
+    }
+    const payload = { fetchedAt: new Date().toISOString(), sourceUrl: HISTORY_URL, rows };
+    writeJson(HISTORY_CACHE_PATH, payload);
+    return { ...payload, fromCache: false };
+  } catch (error) {
+    if (cached?.rows?.length) return { ...cached, fromCache: true, warning: error.message };
+    throw error;
+  }
+}
+
+// --- JSON response helper ---
 function jsonResponse(response, statusCode, payload) {
   response.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
@@ -115,6 +139,7 @@ function jsonResponse(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+// --- static file serving ---
 function serveStatic(requestPath, response) {
   const normalized = requestPath === "/" ? "/index.html" : requestPath;
   const targetPath = path.normalize(path.join(PUBLIC_DIR, normalized));
@@ -136,6 +161,7 @@ function serveStatic(requestPath, response) {
   });
 }
 
+// --- main server ---
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, `http://${request.headers.host}`);
   try {
@@ -143,6 +169,17 @@ const server = http.createServer(async (request, response) => {
       const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
       const livePayload = await loadLive(forceRefresh);
       jsonResponse(response, 200, livePayload);
+      return;
+    }
+    if (requestUrl.pathname === "/api/history") {
+      const forceRefresh = requestUrl.searchParams.get("refresh") === "1";
+      const historyPayload = await loadHistory(forceRefresh);
+      jsonResponse(response, 200, historyPayload);
+      return;
+    }
+    if (requestUrl.pathname === "/api/dashboard") {
+      const [historyPayload, livePayload] = await Promise.all([loadHistory(false), loadLive(false)]);
+      jsonResponse(response, 200, { live: livePayload, history: historyPayload.rows });
       return;
     }
     serveStatic(requestUrl.pathname, response);
