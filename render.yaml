@@ -3,7 +3,7 @@ services:
     name: shillong-teer-dashboard
     env: node
     plan: free
-    rootDir: .          # must be root, not "New project"
+    rootDir: .
     buildCommand: npm install
     startCommand: node server.js
     autoDeploy: true
